@@ -1,0 +1,25 @@
+# secrets - never commit
+.env
+**/secrets.h
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# runtime data (history db, scan photos)
+data/
+
+# build output
+build/
+*.bin
+*.elf
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude Code local config
+.claude/
