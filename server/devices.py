@@ -118,6 +118,8 @@ class MockDevice:
         self.pending = [False, False, False]
         self.next_check = time.time() + 15
         self.turn_deg = 0
+        self.sweep_t0 = 0.0
+        self.sweep_center = 0
         self.park_pending = False
         self.rng = random.Random(7)
 
@@ -242,6 +244,21 @@ class MockDevice:
         self.queue.append(dict(type="pump", pot=i, secs=secs, force=force))
         self.pending[i] = True
 
+    SWEEP_PHASE_S = 2.0  # seconds per leg: +180, back, -180, back
+
+    def _turntable(self) -> dict[str, Any]:
+        if self.sweep_t0:
+            t = time.time() - self.sweep_t0
+            leg = int(t // self.SWEEP_PHASE_S)
+            if leg < 4:
+                stops = [0, 180, 0, -180, 0]
+                frac = (t % self.SWEEP_PHASE_S) / self.SWEEP_PHASE_S
+                self.turn_deg = self.sweep_center + round(stops[leg] + (stops[leg + 1] - stops[leg]) * frac)
+                return dict(busy=True, sweeping=True, deg=self.turn_deg)
+            self.sweep_t0 = 0.0
+            self.turn_deg = self.sweep_center
+        return dict(busy=False, sweeping=False, deg=self.turn_deg)
+
     # ----- same interface as Device -----
     def status(self) -> dict[str, Any]:
         with self.lock:
@@ -265,7 +282,7 @@ class MockDevice:
                 distance_cm=dist, baseline_cm=self.BASE_CM, pump=self.pump_until > 0, auto=self.auto,
                 queue=len(self.queue) + (1 if self.cur else 0), active_pot=(self.cur or {}).get("pot", -1) + 1,
                 last_event_id=self._eid(), next_check_s=int(self.next_check - time.time()) if self.auto else -1,
-                settings=dict(self.cfg), turntable=dict(busy=False, deg=self.turn_deg % 360), pots=pots)
+                settings=dict(self.cfg), turntable=self._turntable(), pots=pots)
 
     def events(self, since: int) -> dict[str, Any]:
         with self.lock:
@@ -288,6 +305,7 @@ class MockDevice:
     def command(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
             self._tick()
+            self._turntable()  # lets a finished sweep clear itself
             if self.state == "error" and action not in ("stop",):
                 self.state, self.error, self.message = "idle", "", "Idle"
 
@@ -323,6 +341,7 @@ class MockDevice:
                 return dict(ok=True, msg=f"{n} pot(s) queued" if n else "All pots are moist enough")
             if action == "stop":
                 self.queue.clear()
+                self.sweep_t0 = 0.0
                 self.cur, self.pump_until = None, 0.0
                 self.pending = [False] * 3
                 self.state, self.message, self.error = "idle", "Stopped", ""
@@ -337,8 +356,15 @@ class MockDevice:
                 self.auto = str(params.get("on")) == "1"
                 return dict(ok=True, msg="Auto watering " + ("ON" if self.auto else "OFF"))
             if action == "turntable":
+                if self.sweep_t0:
+                    raise DeviceError("Turntable is already moving", 409)
                 self.turn_deg += int(params.get("deg", 0))
                 return dict(ok=True, msg=f"Rotating {params.get('deg')} deg")
+            if action == "sweep":
+                if self.sweep_t0:
+                    raise DeviceError("Turntable is already moving", 409)
+                self.sweep_center, self.sweep_t0 = self.turn_deg, time.time()
+                return dict(ok=True, msg="Turntable sweep started")
             if action == "soilcal":
                 i = pot()
                 key = "dry" if params.get("point") == "dry" else "wet"

@@ -57,6 +57,11 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 #define RAIL_ACCEL         600.0f    // steps / s^2
 #define HOME_SPEED         500.0f    // steps / s while seeking the Home sensor
 #define TURN_SPEED         600.0f
+#define TURN_ACCEL         500.0f
+// Turntable sweep: +SWEEP_DEG, back to centre, -SWEEP_DEG, back to centre.
+// 180 deg each way = a full 360 deg look at the plant, and the cable never twists more than half a turn.
+#define SWEEP_DEG          180
+#define SWEEP_PAUSE_MS     800       // hold at every stop (time for the camera)
 #define MAX_TRAVEL_STEPS   60000L    // give up homing / scanning after this many steps (rail length safety)
 
 // ---------------------------------------------------------------------------

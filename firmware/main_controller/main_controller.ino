@@ -130,7 +130,11 @@ uint32_t lastWifiTry = 0;
 
 // turntable
 bool turnActive = false;
-long turnDegTotal = 0;
+bool sweeping = false;        // +SWEEP_DEG, centre, -SWEEP_DEG, centre
+bool sweepMoving = false;
+uint8_t sweepStep = 0;
+long sweepCenter = 0;
+uint32_t sweepPauseUntil = 0;
 
 // events
 Event events[EVENT_MAX];
@@ -262,7 +266,12 @@ float pingMedianCm(uint8_t n) {
     delay(35);
   }
   if (k == 0) return -1.0f;
-  std::sort(v, v + k);
+  for (uint8_t i = 1; i < k; i++) {  // insertion sort (k <= 9)
+    float x = v[i];
+    int8_t j = i - 1;
+    while (j >= 0 && v[j] > x) { v[j + 1] = v[j]; j--; }
+    v[j + 1] = x;
+  }
   return v[k / 2];
 }
 
@@ -606,9 +615,29 @@ void schedulerService() {
 // ----------------------------------------------------------------------------
 //  Turntable (lower motor)
 // ----------------------------------------------------------------------------
+long turnDegrees() { return (turn.position() * 360L) / STEPS_PER_REV_HALF; }
+
 void turnService() {
   turn.update();
-  if (turnActive && !turn.isRunning()) { turn.release(); turnActive = false; }
+  if (turn.isRunning()) return;
+
+  if (sweeping) {
+    if (sweepMoving) {  // just arrived at a stop: hold for a moment
+      sweepMoving = false;
+      sweepPauseUntil = millis() + SWEEP_PAUSE_MS;
+    }
+    if ((int32_t)(millis() - sweepPauseUntil) < 0) return;
+    if (sweepStep < 4) {
+      static const int8_t mul[4] = {1, 0, -1, 0};  // +180, back, -180, back
+      turn.moveTo(sweepCenter + (long)mul[sweepStep] * ((long)SWEEP_DEG * STEPS_PER_REV_HALF / 360));
+      sweepStep++;
+      sweepMoving = true;
+      return;
+    }
+    sweeping = false;  // finished, back at the centre
+  }
+
+  if (turnActive) { turn.release(); turnActive = false; }
 }
 
 // ----------------------------------------------------------------------------
@@ -697,7 +726,8 @@ void handleStatus() {
 
   j += "\"turntable\":{";
   kvb(j, "busy", turnActive);
-  kvi(j, "deg", ((turnDegTotal % 360) + 360) % 360);
+  kvb(j, "sweeping", sweeping);
+  kvi(j, "deg", turnDegrees());
   trimComma(j);
   j += "},";
 
@@ -824,6 +854,7 @@ void handleStop() {
   turn.stopNow();
   turn.release();
   turnActive = false;
+  sweeping = false;
   replyOk("Stopped");
 }
 
@@ -861,11 +892,24 @@ void handleTurntable() {
   long deg = server.arg("deg").toInt();
   if (deg == 0 || deg > 720 || deg < -720) return replyErr(400, "deg must be between -720 and 720");
   turn.setMaxSpeed(TURN_SPEED);
-  turn.setAcceleration(500.0f);
+  turn.setAcceleration(TURN_ACCEL);
   turn.moveTo(turn.position() + (deg * STEPS_PER_REV_HALF) / 360);
-  turnDegTotal += deg;
   turnActive = true;
   replyOk("Rotating " + String(deg) + " deg");
+}
+
+void handleSweep() {  // +180 deg, back to centre, -180 deg, back to centre
+  if (!authOk()) return;
+  if (turnActive) return replyErr(409, "Turntable is already moving");
+  turn.setMaxSpeed(TURN_SPEED);
+  turn.setAcceleration(TURN_ACCEL);
+  sweepCenter = turn.position();  // the sweep is symmetric around wherever the turntable stands now
+  sweepStep = 0;
+  sweepMoving = false;
+  sweepPauseUntil = millis();
+  sweeping = true;
+  turnActive = true;
+  replyOk("Turntable sweep started");
 }
 
 void handleSoilCal() {
@@ -940,6 +984,7 @@ void setupServer() {
   server.on("/api/jog", HTTP_POST, handleJog);
   server.on("/api/auto", HTTP_POST, handleAuto);
   server.on("/api/turntable", HTTP_POST, handleTurntable);
+  server.on("/api/sweep", HTTP_POST, handleSweep);
   server.on("/api/soilcal", HTTP_POST, handleSoilCal);
   server.on("/api/settings", HTTP_POST, handleSettings);
   server.onNotFound(handleNotFound);

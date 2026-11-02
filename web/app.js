@@ -361,7 +361,10 @@
     $('#railMsg').textContent = d.state === 'error' ? d.error : d.message + (d.queue > 1 ? ` · ${d.queue - 1} more queued` : '');
     const auto = $('#autoToggle');
     if (document.activeElement !== auto) auto.checked = !!d.auto;
-    $('#turnDeg').textContent = d.turntable ? ` Now at ${d.turntable.deg}°.` : '';
+    const tt = d.turntable;
+    $('#turnDeg').textContent = tt ? (tt.sweeping ? ` Sweeping… now at ${tt.deg}°.` : ` Now at ${tt.deg}° from its start position.`) : '';
+    $('#sweepBtn').dataset.busy = tt && tt.busy ? '1' : '';
+    $('#sweepBtn').disabled = !!(tt && tt.busy) || !S.status.online;
   }
 
   /* ------------------------------------------------------------------ settings form */

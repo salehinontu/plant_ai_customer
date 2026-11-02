@@ -91,6 +91,14 @@ Open <http://localhost:8000> (from a phone: `http://<PC-IP>:8000`).
 
 Safety limits in firmware: pump max 30 s per run, 6 waterings per pot per day, stop on unexpected limit sensors, homing fails with a message if the carriage goes the wrong way.
 
+## Turntable sweep (lower motor)
+
+**Care → Turntable → 360° sweep** (or `POST /api/sweep`) does a full look around without ever winding the cable more than half a turn:
+
+`+180°` → back to centre → `-180°` → back to centre
+
+The centre is wherever the turntable stands when the sweep starts, and it holds for `SWEEP_PAUSE_MS` at every stop. Tune `SWEEP_DEG`, `SWEEP_PAUSE_MS`, `TURN_SPEED` and `INVERT_TURN_DIR` (which way is "+") in `config.h`. The **Stop** button halts it.
+
 ## AI diagnosis
 
 * The server sends the photo (and the pot's soil-moisture reading) to **Claude** (`claude-opus-5-5` by default, change with `CLAUDE_MODEL`) and gets structured JSON back: plant, health, issues with confidence and treatment, care tips, watering advice.
@@ -109,7 +117,8 @@ All on the ESP32 (port 80). `POST` calls need the header `X-Api-Key`.
 | `GET /api/scan`, `GET /api/events?since=N` | last calibration scan, event log |
 | `POST /api/home`, `/api/calibrate`, `/api/stop` | carriage control |
 | `POST /api/goto?pot=N`, `/api/water?pot=N&secs=S`, `/api/check` | move / water / check all pots |
-| `POST /api/pump?secs=S`, `/api/jog?steps=N`, `/api/turntable?deg=D` | bench tools |
+| `POST /api/sweep`, `/api/turntable?deg=D` | turntable (lower motor): 360° sweep / manual rotate |
+| `POST /api/pump?secs=S`, `/api/jog?steps=N` | bench tools |
 | `POST /api/auto?on=1`, `/api/settings?…`, `/api/soilcal?pot=N&point=dry\|wet` | configuration |
 
 ## Troubleshooting

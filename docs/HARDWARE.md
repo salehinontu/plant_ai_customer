@@ -122,6 +122,7 @@ Never power a pump from an ESP32 pin. Use a relay (or MOSFET) module:
 * HC-SR04 range is about 2 cm to 4 m. The pot lid and the empty base must differ by **at least ~3 cm**, otherwise lower "Pot detection" on the Care page.
 * Leaves can reflect badly. The firmware joins short gaps, so a few bad readings inside a pot are fine.
 * The nozzle is usually a few centimetres away from the sensor. If water lands beside the pot, change **Nozzle offset** (steps, positive = towards End) and press "Go to pot" to check.
+* The lower motor turns the plant. It uses the same 28BYJ-48 half-step drive (4096 steps = 360°), so one `360° sweep` is +180°, back, -180°, back. If your gearing differs, change `STEPS_PER_REV_HALF` in `config.h`.
 * The first time, use the **Direction test** buttons on the Care page: positive must move the carriage towards the End sensor. If not, set `INVERT_RAIL_DIR true` in `config.h`.
 
 ## 5. Safety
