@@ -118,6 +118,7 @@ uint32_t distStamp = 0;
 // scan data (kept in RAM for the website chart)
 uint16_t scanMm[MAX_SCAN];
 uint16_t scanN = 0;
+uint16_t scanValid = 0;       // readings with a real echo during the current scan
 static uint16_t sortBuf[MAX_SCAN];
 static uint8_t flagBuf[MAX_SCAN];
 long nextSamplePos = 0;
@@ -442,6 +443,7 @@ void startCmd() {
       statusMsg = "Scanning rail";
       if (!homed || !irHome()) { fail("Calibration must start at the Home sensor"); return; }
       scanN = 0;
+      scanValid = 0;
       nextSamplePos = 0;
       rail.setAcceleration(RAIL_ACCEL);
       rail.runAt((float)cfg.scanSpeed);
@@ -496,7 +498,13 @@ void stepCmd() {
       if (pos >= nextSamplePos && scanN < MAX_SCAN) {
         float d = pingCm();
         scanMm[scanN++] = d > 0 ? (uint16_t)(d * 10.0f + 0.5f) : 0;
+        if (d > 0) scanValid++;
         nextSamplePos += SCAN_SAMPLE_STEPS;
+        if (scanN == 20 && scanValid == 0) {  // do not waste minutes on a scan that cannot work
+          rail.stopNow();
+          fail("No ultrasonic echo in the first 20 readings. Check VCC, TRIG (GPIO25), ECHO (GPIO35) and the divider, then open /api/ultrasonic");
+          return;
+        }
       }
       if (irEnd()) {
         rail.stopNow();
