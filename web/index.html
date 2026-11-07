@@ -218,6 +218,33 @@
     </div>
   </div>
 
+  <div class="card" id="teachCard">
+    <h3>Manual setup <small class="sub">no ultrasonic or End sensor needed</small></h3>
+    <ol class="steps">
+      <li>Jog the carriage to the <b>Home</b> end (next to IR 1) and press <b>Set Home here</b>.</li>
+      <li>Jog to the middle of <b>pot 1</b> and press <b>Save pot 1</b>. Do the same for pot 2 and pot 3 (each further from Home).</li>
+      <li>Press <b>Finish</b>. The carriage can now drive to every pot and water it.</li>
+    </ol>
+    <p class="teach-pos">Carriage position <b id="teachPos">0</b> steps <span id="teachSensors"></span></p>
+    <div class="btn-row wrap jog-row">
+      <button class="btn ghost sm" data-act="jog" data-params='{"steps":-5000}'>◀ 5000</button>
+      <button class="btn ghost sm" data-act="jog" data-params='{"steps":-1000}'>◀ 1000</button>
+      <button class="btn ghost sm" data-act="jog" data-params='{"steps":-200}'>◀ 200</button>
+      <button class="btn ghost sm" data-act="jog" data-params='{"steps":200}'>200 ▶</button>
+      <button class="btn ghost sm" data-act="jog" data-params='{"steps":1000}'>1000 ▶</button>
+      <button class="btn ghost sm" data-act="jog" data-params='{"steps":5000}'>5000 ▶</button>
+    </div>
+    <div class="btn-row wrap">
+      <button class="btn primary sm" data-act="teach" data-params='{"what":"home"}'>① Set Home here</button>
+      <button class="btn primary sm" data-act="teach" data-params='{"what":"pot","pot":1}'>② Save pot 1</button>
+      <button class="btn primary sm" data-act="teach" data-params='{"what":"pot","pot":2}'>Save pot 2</button>
+      <button class="btn primary sm" data-act="teach" data-params='{"what":"pot","pot":3}'>Save pot 3</button>
+      <button class="btn ghost sm" data-act="teach" data-params='{"what":"end"}'>Set End here (optional)</button>
+      <button class="btn primary sm" data-act="teach" data-params='{"what":"done"}'>③ Finish</button>
+    </div>
+    <p class="hint">◀ moves towards Home, ▶ towards End. Each press moves the carriage and stops it at a sensor if it reaches one.</p>
+  </div>
+
   <div class="care-grid">
     <div class="card">
       <h3>Pots</h3>
@@ -234,6 +261,7 @@
         <label class="field">Pot detection <span class="unit">cm change</span><input type="number" min="0.5" max="30" step="0.5" data-setting="delta_cm"></label>
         <label class="field">Pots are<select data-setting="pot_closer"><option value="1">closer than the base</option><option value="0">lower than the base</option></select></label>
         <label class="field">Return home after watering<select data-setting="park"><option value="1">Yes</option><option value="0">No</option></select></label>
+        <label class="field">Check for the pot with ultrasonic before watering<select data-setting="verify"><option value="1">Yes</option><option value="0">No</option></select></label>
       </div>
       <p class="hint">Nozzle offset: if the water lands beside the pot, move the carriage with this value (positive = towards End).</p>
     </div>

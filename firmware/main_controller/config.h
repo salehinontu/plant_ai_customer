@@ -36,7 +36,8 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 // ---------------------------------------------------------------------------
 // Carriage direction: positive steps must move the carriage from Home towards End.
 // If the carriage runs the wrong way during the "Direction test", flip this.
-#define INVERT_RAIL_DIR false
+// (true here: on this build the carriage moved the wrong way with false.)
+#define INVERT_RAIL_DIR true
 #define INVERT_TURN_DIR false
 
 // Typical IR obstacle modules pull OUT low when the carriage flag is in front of them.

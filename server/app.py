@@ -24,7 +24,7 @@ device: Any = MockDevice() if config.MOCK else Device(config.ESP32_URL, config.E
 camera: Any = MockCamera() if config.MOCK else Camera(config.CAM_URL)
 
 ACTIONS = {"home", "calibrate", "goto", "water", "check", "stop", "pump", "jog", "auto", "turntable",
-           "sweep", "soilcal", "settings"}
+           "sweep", "teach", "soilcal", "settings"}
 ALLOWED_IMAGES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
 STATE: dict[str, Any] = {"device": None, "online": False, "fails": 0, "ts": 0.0, "cam_online": None,

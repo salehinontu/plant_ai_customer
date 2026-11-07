@@ -74,10 +74,11 @@ The first run creates `.env`. Fill in:
 Open <http://localhost:8000> (from a phone: `http://<PC-IP>:8000`).
 
 ### e) Bring-up checklist (first time, in this order)
-1. **Care → Direction test.** Press `200 ▶`: the carriage must move towards the End sensor. If not, set `INVERT_RAIL_DIR true`.
+1. **Care → Direction test.** Press `200 ▶`: the carriage must move towards the End sensor. If not, flip `INVERT_RAIL_DIR` in `config.h` (it is `true` by default in this repo because the author's carriage ran backwards with `false`).
 2. **IR sensors.** Move the flag by hand: the *IR sensors* tile on Home must switch to "At Home" / "At End".
 3. **Pump test**, with the pump in a cup. It must be off when idle; if it runs constantly, flip `PUMP_ACTIVE_LOW`.
 4. **Calibrate rail.** The carriage homes, travels to the End sensor while the ultrasonic sensor samples, and detects the three pots. The chart shows the scan; if the pot count is not 3, tune **Pot detection** / **Pots are closer / lower than the base** and run it again. Positions are saved in flash.
+   **No working ultrasonic sensor or End sensor yet?** Use **Care → Manual setup** instead: jog the carriage to Home and press *Set Home here*, jog to each pot and press *Save pot N*, then *Finish*. No scan is needed; the "check for the pot with ultrasonic" option is then off until you switch it on.
 5. **Soil sensors.** For each pot hold the sensor in air → **Set dry**, in water → **Set wet**.
 6. **Nozzle offset.** Press **Go to pot** and **Water now**; if water misses the pot, adjust the offset.
 7. Turn **Auto watering** on and set each pot's threshold and pump seconds.
@@ -120,6 +121,7 @@ All on the ESP32 (port 80). `POST` calls need the header `X-Api-Key`.
 | `POST /api/goto?pot=N`, `/api/water?pot=N&secs=S`, `/api/check` | move / water / check all pots |
 | `POST /api/sweep`, `/api/turntable?deg=D` | turntable (lower motor): 360° sweep / manual rotate |
 | `POST /api/pump?secs=S`, `/api/jog?steps=N` | bench tools |
+| `POST /api/teach?what=home\|pot\|end\|done&pot=N` | manual set-up: jog, then save positions |
 | `POST /api/auto?on=1`, `/api/settings?…`, `/api/soilcal?pot=N&point=dry\|wet` | configuration |
 
 ## Troubleshooting

@@ -363,6 +363,8 @@
     if (document.activeElement !== auto) auto.checked = !!d.auto;
     const tt = d.turntable;
     $('#turnDeg').textContent = tt ? (tt.sweeping ? ` Sweeping… now at ${tt.deg}°.` : ` Now at ${tt.deg}° from its start position.`) : '';
+    $('#teachPos').textContent = d.pos;
+    $('#teachSensors').textContent = `· IR 1 ${d.ir_home ? '●' : '○'}  IR 2 ${d.ir_end ? '●' : '○'}${d.homed ? '' : ' · home not set'}`;
     $('#sweepBtn').dataset.busy = tt && tt.busy ? '1' : '';
     $('#sweepBtn').disabled = !!(tt && tt.busy) || !S.status.online;
   }
@@ -408,7 +410,7 @@
     };
     const c = d.settings;
     set('check_min', c.check_min); set('soak_min', c.soak_min); set('nozzle_offset', c.nozzle_offset);
-    set('delta_cm', c.delta_cm); set('pot_closer', c.pot_closer ? '1' : '0'); set('park', c.park ? '1' : '0');
+    set('delta_cm', c.delta_cm); set('pot_closer', c.pot_closer ? '1' : '0'); set('park', c.park ? '1' : '0'); set('verify', c.verify ? '1' : '0');
     d.pots.forEach((p) => { set('e' + p.id, p.enabled); set('t' + p.id, p.threshold); set('s' + p.id, p.water_secs); });
   }
 
@@ -448,7 +450,7 @@
     let alert = null;
     if (!s.online) alert = ['', 'The controller is offline. Check its power, the Wi-Fi and ESP32_URL in the .env file.'];
     else if (d.state === 'error') alert = ['', 'Controller error: ' + d.error];
-    else if (!d.calibrated) alert = ['warn', 'The rail is not calibrated yet. Open Care and press “Calibrate rail” so the carriage can find the pots.'];
+    else if (!d.calibrated) alert = ['warn', 'The rail is not set up yet. Open Care and use “Manual setup” (or “Calibrate rail”) so the carriage knows where the pots are.'];
     bar.hidden = !alert;
     if (alert) { bar.className = 'banner-alert ' + alert[0]; bar.textContent = alert[1]; }
 

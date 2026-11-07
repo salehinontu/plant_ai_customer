@@ -28,7 +28,8 @@ MOCK = env("MOCK_DEVICE", "0") == "1"
 
 WEB_DIR = ROOT / "web"
 DATA_DIR = ROOT / "data"
-SCANS_DIR = DATA_DIR / "scans"
-DB_PATH = DATA_DIR / "plantrail.db"
+# the simulator keeps its own history, so demo data never mixes with real readings
+SCANS_DIR = DATA_DIR / ("scans_demo" if MOCK else "scans")
+DB_PATH = DATA_DIR / ("demo.db" if MOCK else "plantrail.db")
 
 MAX_IMAGE_BYTES = 5 * 1024 * 1024  # Claude's per-image limit

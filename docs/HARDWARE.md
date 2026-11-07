@@ -79,7 +79,7 @@ Typical 3-pin IR obstacle modules (FC-51 style):
 | OUT | GPIO 4 (IR 1, Home) / GPIO 23 (IR 2, End) |
 
 * The module pulls OUT **low** when it sees something. This is `IR_ACTIVE_LOW true` in `config.h`.
-* Fix a small white / reflective flag to the carriage so it passes in front of each module at the very end of travel. Turn the module's trimpot until its LED lights only when the flag is there.
+* Fix a small white / reflective flag to the carriage so it passes in front of each module at the very end of travel. Black 3D-printed parts reflect almost no infrared, so the flag must be white (paper, tape, foil). A micro limit switch between the pin and GND works too, with no code change. Turn the module's trimpot until its LED lights only when the flag is there.
 * IR 1 sits at the **Home** end, IR 2 at the **End**. The firmware treats positive steps as Home → End.
 
 ### Water pump

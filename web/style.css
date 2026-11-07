@@ -406,3 +406,10 @@ h1 em { font-style: normal; color: var(--orange); white-space: nowrap; }
 }
 
 .res-photo { width: 100%; max-height: 220px; object-fit: cover; border-radius: 14px; margin: 12px 0 4px; display: block; background: var(--sage-bg); }
+
+/* manual setup (teach) card */
+.sub { font-family: var(--font); font-size: .78rem; font-weight: 500; color: var(--muted); margin-left: 8px; }
+.steps { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 6px; font-size: .9rem; }
+.teach-pos { font-size: .9rem; color: var(--muted); margin: 6px 0 2px; }
+.teach-pos b { color: var(--ink); font-family: var(--font-display); font-size: 1.25rem; margin: 0 2px; }
+.jog-row .btn { min-width: 76px; }

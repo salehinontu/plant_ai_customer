@@ -105,7 +105,7 @@ class MockDevice:
         self.moist = [58.0, 23.0, 41.0]
         self.auto = True
         self.cfg = dict(check_min=2, soak_min=5, nozzle_offset=0, delta_cm=3.0, pot_closer=True,
-                        park=True, rail_speed=700, scan_speed=400)
+                        park=True, verify=True, rail_speed=700, scan_speed=400)
         self.pots = [dict(threshold=35, water_secs=5, enabled=True, dry=2900, wet=1300) for _ in range(3)]
         self.state, self.message, self.error = "idle", "Ready", ""
         self.queue: list[dict[str, Any]] = []
@@ -215,7 +215,7 @@ class MockDevice:
                 self._finish("Jog done")
         elif c["type"] == "pump":
             if c["phase"] == 0 and now - c["t0"] > 0.5:
-                if not c["force"] and not self._over_pot():
+                if not c["force"] and self.cfg["verify"] and not self._over_pot():
                     self._fail("No pot detected under the nozzle. Water skipped.")
                     return
                 self._event("pump", c["pot"] + 1, c["secs"], self._pct(c["pot"]))
@@ -371,13 +371,38 @@ class MockDevice:
                 p = self.pots[i]
                 p[key] = int(p["dry"] - (p["dry"] - p["wet"]) * self.moist[i] / 100.0)
                 return dict(ok=True, msg=f"Saved {key} for pot {i + 1}")
+            if action == "teach":
+                if self.cur or self.queue:
+                    raise DeviceError("Busy - wait for the carriage to stop", 409)
+                what = params.get("what")
+                if what == "home":
+                    self.pos, self.homed = 0.0, True
+                    return dict(ok=True, msg="Home position set here (0)")
+                if not self.homed:
+                    raise DeviceError("Set the Home position first", 409)
+                if what == "pot":
+                    i = pot()
+                    if self.pos <= 0:
+                        raise DeviceError("Move the carriage away from Home (towards End) first", 409)
+                    self.pot_pos[i] = int(self.pos)
+                    return dict(ok=True, msg=f"Pot {i + 1} saved at {int(self.pos)} steps")
+                if what == "end":
+                    return dict(ok=True, msg=f"End saved at {int(self.pos)} steps")
+                if what == "done":
+                    p = self.pot_pos
+                    if not (0 < p[0] < p[1] < p[2]):
+                        raise DeviceError("Save pot 1, pot 2 and pot 3 in that order, each further from Home than the last", 409)
+                    self.calibrated = True
+                    self.cfg["verify"] = False
+                    return dict(ok=True, msg="Teaching finished: 3 pots saved")
+                raise DeviceError("what must be home, pot, end or done", 400)
             if action == "settings":
                 for k in ("check_min", "soak_min", "nozzle_offset", "rail_speed", "scan_speed"):
                     if k in params:
                         self.cfg[k] = int(params[k])
                 if "delta_cm" in params:
                     self.cfg["delta_cm"] = float(params["delta_cm"])
-                for k in ("pot_closer", "park"):
+                for k in ("pot_closer", "park", "verify"):
                     if k in params:
                         self.cfg[k] = str(params[k]) == "1"
                 for i in range(3):

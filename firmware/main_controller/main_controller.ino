@@ -44,6 +44,7 @@ struct Settings {
   bool potEnabled[3] = {true, true, true};
   int16_t soilDry[3] = {2900, 2900, 2900};  // ADC value in air
   int16_t soilWet[3] = {1300, 1300, 1300};  // ADC value in water
+  bool verifyPot = true;        // check with the ultrasonic sensor that a pot is below the nozzle before pumping
 };
 
 enum State : uint8_t { ST_IDLE, ST_HOMING, ST_CALIBRATING, ST_MOVING, ST_WATERING, ST_ERROR };
@@ -313,6 +314,8 @@ void clearError() {
 }
 
 void fail(const String& msg) {
+  // after a failed homing / scan the position reference cannot be trusted any more
+  if (curActive && (cur.type == CMD_HOME || cur.type == CMD_CALIBRATE)) homed = false;
   rail.stopNow();
   rail.release();
   pumpSet(false);
@@ -465,7 +468,7 @@ void startCmd() {
     case CMD_JOG:
       state = ST_MOVING;
       statusMsg = "Jog";
-      rail.setMaxSpeed(300);
+      rail.setMaxSpeed(500);
       rail.setAcceleration(RAIL_ACCEL);
       rail.moveTo(rail.position() + cur.arg);
       break;
@@ -501,6 +504,7 @@ void stepCmd() {
         String err;
         if (!analyzeScan(err)) { fail(err); return; }
         cfg.calibrated = true;
+        cfg.verifyPot = true;  // the ultrasonic sensor just worked, so use it
         saveSettings();
         addEvent("calibrated", 0, 0, 0, "Rail " + String(cfg.railSteps) + " steps");
         parkPending = true;
@@ -523,7 +527,7 @@ void stepCmd() {
       if (phase == 0) {  // let the carriage stop shaking
         if (millis() - phaseT0 >= 500) phase = 1;
       } else if (phase == 1) {
-        if (!cur.force) {
+        if (!cur.force && cfg.verifyPot) {
           float d = pingMedianCm(5);
           if (!potBelow(d)) {
             fail("No pot detected under the nozzle (distance " + (d > 0 ? String(d, 1) + " cm" : String("n/a")) +
@@ -719,6 +723,7 @@ void handleStatus() {
   kvf(j, "delta_cm", cfg.deltaCm);
   kvb(j, "pot_closer", cfg.potCloser);
   kvb(j, "park", cfg.park);
+  kvb(j, "verify", cfg.verifyPot);
   kvi(j, "rail_speed", cfg.railSpeed);
   kvi(j, "scan_speed", cfg.scanSpeed);
   trimComma(j);
@@ -940,6 +945,47 @@ void handleSweep() {  // +180 deg, back to centre, -180 deg, back to centre
   replyOk("Turntable sweep started");
 }
 
+// Manual set-up that needs neither the ultrasonic sensor nor the End IR sensor:
+// jog the carriage, then save positions. what = home | pot | end | done
+void handleTeach() {
+  if (!authOk()) return;
+  if (state != ST_IDLE || curActive || rail.isRunning()) return replyErr(409, "Busy - wait for the carriage to stop");
+  String what = server.arg("what");
+  long pos = rail.position();
+
+  if (what == "home") {
+    rail.setPosition(0);
+    homed = true;
+    return replyOk("Home position set here (0)");
+  }
+  if (!homed) return replyErr(409, "Set the Home position first");
+
+  if (what == "pot") {
+    int p = potArg();
+    if (p < 0) return;
+    if (pos <= 0) return replyErr(409, "Move the carriage away from Home (towards End) first");
+    cfg.potPos[p] = pos;
+    saveSettings();
+    return replyOk("Pot " + String(p + 1) + " saved at " + String(pos) + " steps");
+  }
+  if (what == "end") {
+    if (pos <= 0) return replyErr(409, "Move the carriage towards End first");
+    cfg.railSteps = pos;
+    saveSettings();
+    return replyOk("End saved at " + String(pos) + " steps");
+  }
+  if (what == "done") {
+    if (cfg.potPos[0] <= 0 || cfg.potPos[0] >= cfg.potPos[1] || cfg.potPos[1] >= cfg.potPos[2])
+      return replyErr(409, "Save pot 1, pot 2 and pot 3 in that order, each further from Home than the last");
+    if (cfg.railSteps < cfg.potPos[2] + 500) cfg.railSteps = cfg.potPos[2] + 500;
+    cfg.calibrated = true;
+    cfg.verifyPot = false;  // no ultrasonic check unless you switch it on in the settings
+    saveSettings();
+    return replyOk("Teaching finished: 3 pots saved");
+  }
+  replyErr(400, "what must be home, pot, end or done");
+}
+
 void handleSoilCal() {
   if (!authOk()) return;
   int p = potArg();
@@ -969,6 +1015,7 @@ void handleSettings() {
   if (num("scan_speed", 100, 600, v)) cfg.scanSpeed = v;
   if (num("pot_closer", 0, 1, v)) cfg.potCloser = v;
   if (num("park", 0, 1, v)) cfg.park = v;
+  if (num("verify", 0, 1, v)) cfg.verifyPot = v;
   if (server.hasArg("delta_cm")) {
     float d = server.arg("delta_cm").toFloat();
     cfg.deltaCm = d < 0.5f ? 0.5f : (d > 30.0f ? 30.0f : d);
@@ -1011,6 +1058,7 @@ void setupServer() {
   server.on("/api/stop", HTTP_POST, handleStop);
   server.on("/api/pump", HTTP_POST, handlePump);
   server.on("/api/jog", HTTP_POST, handleJog);
+  server.on("/api/teach", HTTP_POST, handleTeach);
   server.on("/api/auto", HTTP_POST, handleAuto);
   server.on("/api/turntable", HTTP_POST, handleTurntable);
   server.on("/api/sweep", HTTP_POST, handleSweep);
