@@ -802,6 +802,34 @@ void handleEvents() {
   sendJson(200, j);
 }
 
+// Wiring diagnostic: open http://<ip>/api/ultrasonic in a browser while the carriage is idle.
+void handleUltrasonicTest() {
+  String j = "{";
+  kvi(j, "trig_pin", PIN_US_TRIG);
+  kvi(j, "echo_pin", PIN_US_ECHO);
+  kvi(j, "echo_idle", digitalRead(PIN_US_ECHO));  // must be 0 before a ping
+  j += "\"pulses_us\":[";
+  uint8_t hits = 0;
+  for (uint8_t i = 0; i < 5; i++) {
+    digitalWrite(PIN_US_TRIG, LOW);
+    delayMicroseconds(4);
+    digitalWrite(PIN_US_TRIG, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(PIN_US_TRIG, LOW);
+    unsigned long us = pulseIn(PIN_US_ECHO, HIGH, 30000UL);  // 0 = no pulse within 30 ms
+    if (us) hits++;
+    j += String(us);
+    if (i < 4) j += ',';
+    delay(60);
+  }
+  j += "],";
+  kvi(j, "hits", hits);
+  kvi(j, "echo_after", digitalRead(PIN_US_ECHO));
+  trimComma(j);
+  j += "}";
+  sendJson(200, j);
+}
+
 void handleHome() {
   if (!authOk()) return;
   clearError();
@@ -974,6 +1002,7 @@ void setupServer() {
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/scan", HTTP_GET, handleScan);
   server.on("/api/events", HTTP_GET, handleEvents);
+  server.on("/api/ultrasonic", HTTP_GET, handleUltrasonicTest);
   server.on("/api/home", HTTP_POST, handleHome);
   server.on("/api/calibrate", HTTP_POST, handleCalibrate);
   server.on("/api/goto", HTTP_POST, handleGoto);

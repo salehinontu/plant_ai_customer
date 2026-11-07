@@ -115,6 +115,7 @@ All on the ESP32 (port 80). `POST` calls need the header `X-Api-Key`.
 |---|---|
 | `GET /api/status` | everything the website shows |
 | `GET /api/scan`, `GET /api/events?since=N` | last calibration scan, event log |
+| `GET /api/ultrasonic` | ultrasonic wiring diagnostic (open in a browser while idle) |
 | `POST /api/home`, `/api/calibrate`, `/api/stop` | carriage control |
 | `POST /api/goto?pot=N`, `/api/water?pot=N&secs=S`, `/api/check` | move / water / check all pots |
 | `POST /api/sweep`, `/api/turntable?deg=D` | turntable (lower motor): 360° sweep / manual rotate |
@@ -129,6 +130,7 @@ All on the ESP32 (port 80). `POST` calls need the header `X-Api-Key`.
 | Carriage runs the wrong way | `INVERT_RAIL_DIR` |
 | "Hit the End sensor while homing" | same as above |
 | "Found N pots, expected 3" | open the scan chart; tune Pot detection and polarity |
+| Ultrasonic always shows `-` / "No ultrasonic echo" | open `http://<ip>/api/ultrasonic`: `echo_idle` must be 0 and `hits` above 0 with an object 10-20 cm in front (`pulses_us` about 58 per cm); `echo_idle` 1 = ECHO wire / divider wrong, all zero = no power, TRIG not on GPIO25 or ECHO not on GPIO35 |
 | "No pot detected under the nozzle" | adjust Nozzle offset; check the ultrasonic wiring and the divider |
 | Board will not boot / flash | unplug the lower motor IN2 wire (GPIO 12) while flashing |
 | Random resets | stronger 5 V supply, common ground, capacitor across the pump supply |
