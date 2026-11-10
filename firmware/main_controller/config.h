@@ -57,6 +57,9 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 #define STEPS_PER_REV_HALF 4096      // 28BYJ-48 in half-step mode (turntable: steps for 360 deg)
 #define RAIL_ACCEL         600.0f    // steps / s^2
 #define HOME_SPEED         500.0f    // steps / s while seeking the Home sensor
+#define HOME_SLOW_SPEED    150.0f    // steps / s for the final, precise approach (the zero is always the same edge)
+#define HOME_BACKOFF_MAX   4000L     // max steps allowed to step off a sensor again (flag too small / sensor stuck on)
+#define IR_DEBOUNCE_MS     4         // an IR reading must stay the same this long before it counts
 #define TURN_SPEED         600.0f
 #define TURN_ACCEL         500.0f
 // Turntable sweep: +SWEEP_DEG, back to centre, -SWEEP_DEG, back to centre.

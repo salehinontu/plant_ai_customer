@@ -69,6 +69,13 @@ struct Event {
   char msg[64];
 };
 
+// An IR reading that must stay the same for IR_DEBOUNCE_MS before it counts.
+struct IrFilter {
+  bool state = false;
+  bool raw = false;
+  uint32_t since = 0;
+};
+
 // ----------------------------------------------------------------------------
 //  Globals
 // ----------------------------------------------------------------------------
@@ -96,7 +103,9 @@ bool curActive = false;
 uint8_t phase = 0;
 uint32_t phaseT0 = 0;
 long cmdStartPos = 0;
+long phasePos = 0;            // position at the start of the current homing phase
 bool endArmed = false;
+IrFilter irH, irE;            // debounced Home / End sensors
 bool potPending[3] = {false, false, false};
 
 // soil
@@ -146,8 +155,18 @@ uint32_t evNext = 1;
 // ----------------------------------------------------------------------------
 //  Small helpers
 // ----------------------------------------------------------------------------
-static inline bool irHome() { return digitalRead(PIN_IR_HOME) == (IR_ACTIVE_LOW ? LOW : HIGH); }
-static inline bool irEnd()  { return digitalRead(PIN_IR_END)  == (IR_ACTIVE_LOW ? LOW : HIGH); }
+static inline bool irRaw(uint8_t pin) { return digitalRead(pin) == (IR_ACTIVE_LOW ? LOW : HIGH); }
+
+void irUpdate(IrFilter& f, uint8_t pin) {
+  bool r = irRaw(pin);
+  if (r != f.raw) { f.raw = r; f.since = millis(); }
+  else if (r != f.state && millis() - f.since >= IR_DEBOUNCE_MS) f.state = r;
+}
+
+void irService() { irUpdate(irH, PIN_IR_HOME); irUpdate(irE, PIN_IR_END); }
+
+static inline bool irHome() { return irH.state; }
+static inline bool irEnd()  { return irE.state; }
 
 void saveSettings() { prefs.putBytes("cfg", &cfg, sizeof(cfg)); }
 
@@ -431,6 +450,17 @@ bool analyzeScan(String& err) {
   return true;
 }
 
+// Homing has four phases, so the zero is always the same edge of the IR 1 sensor:
+//   1 / 3  step off the sensor (towards End)    2  fast approach (towards Home)    4  slow final approach
+void homePhase(uint8_t p) {
+  phase = p;
+  phasePos = rail.position();
+  rail.stopNow();  // never reverse at speed
+  if (p == 2) rail.runAt(-HOME_SPEED);
+  else if (p == 4) rail.runAt(-HOME_SLOW_SPEED);
+  else rail.runAt(HOME_SLOW_SPEED);
+}
+
 void startCmd() {
   phase = 0;
   phaseT0 = millis();
@@ -438,17 +468,10 @@ void startCmd() {
     case CMD_HOME:
       state = ST_HOMING;
       statusMsg = "Homing";
-      if (irHome()) {  // already at the Home sensor
-        rail.stopNow();
-        rail.setPosition(0);
-        homed = true;
-        finishCmd("At home");
-        return;
-      }
       endArmed = !irEnd();
       cmdStartPos = rail.position();
       rail.setAcceleration(RAIL_ACCEL);
-      rail.runAt(-HOME_SPEED);
+      homePhase(irHome() ? 1 : 2);  // on the sensor: step off it first; otherwise approach it
       break;
 
     case CMD_CALIBRATE:
@@ -493,16 +516,25 @@ void startCmd() {
 void stepCmd() {
   switch (cur.type) {
     case CMD_HOME: {
-      if (irHome()) {
-        rail.stopNow();
-        rail.setPosition(0);
-        homed = true;
-        finishCmd("At home");
-        return;
+      long moved = labs(rail.position() - phasePos);
+      if (phase == 2) {  // fast approach towards Home
+        if (!irEnd()) endArmed = true;
+        if (endArmed && irEnd()) { fail("Hit the End sensor while homing - flip INVERT_RAIL_DIR in config.h"); return; }
+        if (irHome()) { homePhase(3); return; }  // touched the sensor: step off, then come back slowly
+        if (labs(rail.position() - cmdStartPos) > MAX_TRAVEL_STEPS) { fail("Home sensor not found - check IR 1 wiring and the white flag"); return; }
+      } else if (phase == 1 || phase == 3) {  // step off the sensor
+        if (!irHome()) { homePhase(4); return; }
+        if (moved > HOME_BACKOFF_MAX) { fail("IR 1 stays on when moving away from it - check the flag size and the sensor sensitivity"); return; }
+      } else {  // phase 4: slow final approach, the zero is the same edge every time
+        if (irHome()) {
+          rail.stopNow();
+          rail.setPosition(0);
+          homed = true;
+          finishCmd("At home");
+          return;
+        }
+        if (moved > HOME_BACKOFF_MAX + 2000) { fail("Lost the Home sensor on the slow approach - check IR 1"); return; }
       }
-      if (!irEnd()) endArmed = true;
-      if (endArmed && irEnd()) { fail("Hit the End sensor while homing - flip INVERT_RAIL_DIR in config.h"); return; }
-      if (labs(rail.position() - cmdStartPos) > MAX_TRAVEL_STEPS) { fail("Home sensor not found - check IR 1 wiring"); return; }
       break;
     }
 
@@ -1137,6 +1169,8 @@ void setup() {
   pinMode(PIN_US_ECHO, INPUT);
   pinMode(PIN_IR_HOME, INPUT_PULLUP);
   pinMode(PIN_IR_END, INPUT_PULLUP);
+  irH.raw = irH.state = irRaw(PIN_IR_HOME);
+  irE.raw = irE.state = irRaw(PIN_IR_END);
 
   analogReadResolution(12);
   for (uint8_t i = 0; i < 3; i++) {
@@ -1161,6 +1195,7 @@ void setup() {
 }
 
 void loop() {
+  irService();
   server.handleClient();
   rail.update();
   turnService();
