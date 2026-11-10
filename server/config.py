@@ -19,7 +19,7 @@ CAM_STREAM_URL = env("CAM_STREAM_URL", "http://plantcam.local:81/stream")
 
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = env("CLAUDE_MODEL", "claude-opus-5-5")
-AI_LANGUAGE = env("AI_LANGUAGE", "English")
+AI_LANG = "en" if env("AI_LANGUAGE", "bn").lower() in ("en", "english") else "bn"  # default answer language
 AUTO_SCAN_HOURS = float(env("AUTO_SCAN_HOURS", "0") or 0)
 
 HOST = env("HOST", "0.0.0.0")

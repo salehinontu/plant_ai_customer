@@ -102,7 +102,12 @@ The centre is wherever the turntable stands when the sweep starts, and it holds 
 
 ## AI diagnosis
 
-* The server sends the photo (and the pot's soil-moisture reading) to **Claude** (`claude-opus-5-5` by default, change with `CLAUDE_MODEL`) and gets structured JSON back: plant, health, issues with confidence and treatment, care tips, watering advice.
+* **360° plant scan** (Diagnosis page): the turntable under the middle pot turns +180° and back, then -180° and back, and the ESP32-CAM takes photos from four sides (0°, +90°, +180°, -90°). All four go to **Claude** in one request, together with the pot's soil-moisture reading and anything you typed or said.
+* **Bangla and voice:** describe the problem in Bangla or English (type it, or press the microphone: Chrome / Edge speech recognition, works on `http://localhost:8000`, not on a phone over Wi-Fi). Pick the answer language with the switch (default Bangla, `AI_LANGUAGE=bn|en` in `.env`). **Read aloud** speaks the result with the browser's Bangla voice if the computer has one (Microsoft Edge usually does).
+* **Ask a follow-up** under the result ("how do I spray?", "কতদিন পর আবার দেব?"), by typing or speaking.
+* The answer is structured JSON: plant, health, urgency, each disease with symptoms / cause / treatment steps, prevention, care tips, watering advice.
+* Server calls: `POST /api/scan/sweep`, `POST /api/diagnose` (one photo or upload, with `note` and `lang`), `GET /api/scan/progress`, `POST /api/ask`.
+* The model is **Claude** (`claude-opus-5-5` by default, change with `CLAUDE_MODEL`).
 * Photos you scan or upload are sent to the Anthropic API and saved in `data/scans/` on the PC. Each scan is one paid API call.
 * Server-side fallback is enabled so a harmless plant photo that trips a safety classifier is re-run on a fallback model instead of failing.
 * Without `ANTHROPIC_API_KEY` the site runs in demo mode with canned answers.

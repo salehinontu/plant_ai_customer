@@ -271,7 +271,8 @@ class MockDevice:
                 raw = int(p["dry"] - (p["dry"] - p["wet"]) * self.moist[i] / 100.0)
                 pots.append(dict(
                     id=i + 1, raw=raw, moisture=self._pct(i), sensor_ok=True, enabled=p["enabled"],
-                    threshold=p["threshold"], water_secs=p["water_secs"], pos=self.pot_pos[i], dry=p["dry"],
+                    threshold=p["threshold"], water_secs=p["water_secs"], pos=self.pot_pos[i],
+                    dist_cm=round(self.POT_CM + i * 0.4, 1), dry=p["dry"],
                     wet=p["wet"], pending=self.pending[i],
                     last_water_s=-1 if self.last_water[i] is None else int(time.time() - self.last_water[i]),
                     count_today=self.count[i]))

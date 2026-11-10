@@ -152,24 +152,102 @@
   const HEALTH = { healthy: ['ok', 'Healthy'], stressed: ['warn', 'Stressed'], diseased: ['bad', 'Diseased'], unknown: ['info', 'Unknown'] };
   const healthChip = (h) => HEALTH[h] || ['info', h || 'Unknown'];
 
-  function setScanBusy(b) {
+  const URGENCY = { low: ['ok', 'Low urgency'], medium: ['warn', 'Act this week'], high: ['bad', 'Act today'] };
+
+  /* ---- answer language (Bangla / English), remembered in this browser ---- */
+  const langSel = $('#langSel');
+  try { langSel.value = localStorage.getItem('plantrail.lang') || 'bn'; } catch { /* storage may be blocked */ }
+  langSel.addEventListener('change', () => { try { localStorage.setItem('plantrail.lang', langSel.value); } catch { /* ignore */ } });
+  const lang = () => langSel.value;
+
+  /* ---- voice input (Chrome / Edge speech recognition, works on http://localhost) ---- */
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  function setupMic(btn, box) {
+    if (!SR) { btn.disabled = true; btn.title = 'Voice input needs Chrome or Edge'; return; }
+    let rec = null;
+    btn.addEventListener('click', () => {
+      if (rec) { rec.stop(); return; }
+      if (!window.isSecureContext) { toast('Voice input works on http://localhost:8000 (on the PC), not on a phone over Wi-Fi', 'err'); return; }
+      rec = new SR();
+      rec.lang = lang() === 'bn' ? 'bn-BD' : 'en-US';
+      rec.interimResults = true;
+      rec.continuous = false;
+      const base = box.value.trim() ? box.value.trim() + ' ' : '';
+      btn.classList.add('listening');
+      rec.onresult = (ev) => { let text = ''; for (const r of ev.results) text += r[0].transcript; box.value = base + text; };
+      rec.onerror = (ev) => toast(ev.error === 'not-allowed' ? 'Allow the microphone in the browser address bar' : 'Voice input stopped: ' + ev.error, 'err');
+      rec.onend = () => { btn.classList.remove('listening'); rec = null; };
+      try { rec.start(); } catch { rec = null; btn.classList.remove('listening'); }
+    });
+  }
+  setupMic($('#micNote'), $('#noteText'));
+  setupMic($('#micAsk'), $('#askText'));
+
+  /* ---- read aloud ---- */
+  if ('speechSynthesis' in window) window.speechSynthesis.getVoices();  // primes the voice list
+  function speak(text) {
+    if (!('speechSynthesis' in window)) { toast('This browser cannot read aloud', 'err'); return; }
+    const synth = window.speechSynthesis;
+    synth.cancel();
+    const want = lang();
+    const voice = synth.getVoices().find((v) => v.lang.toLowerCase().startsWith(want));
+    if (!voice && want === 'bn') toast('No Bangla voice found on this computer (Microsoft Edge usually has one). Using the default voice.', 'err');
+    const u = new SpeechSynthesisUtterance(text);
+    if (voice) u.voice = voice;
+    u.lang = voice ? voice.lang : (want === 'bn' ? 'bn-BD' : 'en-US');
+    synth.speak(u);
+  }
+  const speechText = (scan) => {
+    const r = scan.result || {};
+    const parts = [r.plant_common_name, r.summary];
+    (r.issues || []).forEach((i) => { parts.push(i.name, i.symptoms_seen, i.likely_cause, ...(i.treatment || [])); });
+    parts.push(...(r.prevention || []), r.watering_advice);
+    return parts.filter(Boolean).join('. ');
+  };
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-speak]');
+    if (b && S.currentScan) speak(speechText(S.currentScan));
+  });
+
+  /* ---- scanning ---- */
+  function setScanBusy(b, text) {
     S.scanning = b;
     const vf = $('.viewfinder.big');
     vf.classList.toggle('busy', b);
     $('.vf-busy', vf).hidden = !b;
-    $('#scanBtn').disabled = b;
-    $('#uploadBtn').disabled = b;
+    if (text) $('#busyText').textContent = text;
+    ['#scanBtn', '#sweepScanBtn', '#uploadBtn'].forEach((id) => { $(id).disabled = b; });
+    $('#scanProgress').hidden = !b || !S.sweeping;
   }
 
-  async function runScan(file) {
-    if (S.scanning) return;
-    setScanBusy(true);
+  async function pollProgress() {
+    try {
+      const p = await api('/api/scan/progress');
+      if (!p.running) return;
+      $('#progressText').textContent = p.text;
+      $('#busyText').textContent = p.text;
+      $('#progressBar').style.width = (p.total ? (100 * p.step) / p.total : 0) + '%';
+    } catch { /* the next tick will try again */ }
+  }
+
+  function scanForm(file) {
     const fd = new FormData();
     const pot = $('#scanPot').value;
     if (pot) fd.append('pot', pot);
+    const note = $('#noteText').value.trim();
+    if (note) fd.append('note', note);
+    fd.append('lang', lang());
     if (file) fd.append('file', file);
+    return fd;
+  }
+
+  async function runScan(kind, file) {
+    if (S.scanning) return;
+    S.sweeping = kind === 'sweep';
+    setScanBusy(true, S.sweeping ? 'Turning the plant and taking photos…' : 'Analysing…');
+    const timer = S.sweeping ? setInterval(pollProgress, 1000) : 0;
     try {
-      const scan = await api('/api/diagnose', { method: 'POST', form: fd });
+      const scan = await api(S.sweeping ? '/api/scan/sweep' : '/api/diagnose', { method: 'POST', form: scanForm(file) });
       S.scans.unshift(scan);
       renderResult(scan);
       renderScans();
@@ -178,16 +256,58 @@
     } catch (e) {
       toast(e.message, 'err');
     } finally {
+      if (timer) clearInterval(timer);
+      S.sweeping = false;
       setScanBusy(false);
     }
   }
-  $('#scanBtn').addEventListener('click', () => runScan(null));
+  $('#sweepScanBtn').addEventListener('click', () => runScan('sweep'));
+  $('#scanBtn').addEventListener('click', () => runScan('one'));
   $('#uploadBtn').addEventListener('click', () => $('#uploadInput').click());
   $('#uploadInput').addEventListener('change', (e) => {
     const f = e.target.files[0];
     e.target.value = '';
-    if (f) runScan(f);
+    if (f) runScan('one', f);
   });
+
+  /* ---- follow-up questions about the result ---- */
+  function addBubble(kind, text, speakable) {
+    const log = $('#askLog');
+    const b = document.createElement('div');
+    b.className = 'bubble ' + kind;
+    b.textContent = text;
+    if (speakable) {
+      const s = document.createElement('button');
+      s.className = 'icon-btn';
+      s.type = 'button';
+      s.setAttribute('aria-label', 'Read aloud');
+      s.innerHTML = icon('speaker');
+      s.addEventListener('click', () => speak(text));
+      b.append(s);
+    }
+    log.append(b);
+    b.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  async function askQuestion() {
+    const box = $('#askText');
+    const q = box.value.trim();
+    if (!q) return;
+    box.value = '';
+    addBubble('q', q);
+    const btn = $('#askBtn');
+    btn.disabled = true;
+    try {
+      const r = await api('/api/ask', { method: 'POST', body: { question: q, scan_id: S.currentScan ? S.currentScan.id : null, lang: lang() } });
+      addBubble('a', r.answer, true);
+    } catch (e) {
+      toast(e.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  $('#askBtn').addEventListener('click', askQuestion);
+  $('#askText').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); askQuestion(); } });
 
   function renderResult(scan) {
     const r = scan.result || {};
@@ -201,21 +321,33 @@
         ${(i.treatment || []).length ? `<ol>${i.treatment.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>` : ''}
       </div>`).join('');
     const tips = (r.care_tips || []).map((t) => `<li>${icon('sprout')}<span>${esc(t)}</span></li>`).join('');
+    const prevent = (r.prevention || []).map((t) => `<li>${icon('shield')}<span>${esc(t)}</span></li>`).join('');
     const meta = [`Identification ${conf}%`, `photo ${esc(r.image_quality || 'n/a')}`, scan.pot ? `Pot ${scan.pot}` : null, hhmm(scan.ts)].filter(Boolean).join(' · ');
-    $('#resultPanel').innerHTML = `
+    const urgency = r.health_status !== 'healthy' && URGENCY[r.urgency] ? `<em class="chip ${URGENCY[r.urgency][0]}">${URGENCY[r.urgency][1]}</em>` : '';
+    const urls = scan.image_urls && scan.image_urls.length ? scan.image_urls : [scan.image_url];
+    const photos = urls.length > 1
+      ? `<div class="photo-strip">${urls.map((u, i) => `<figure><img src="${esc(u)}" alt="" loading="lazy"><figcaption>${esc((scan.labels || [])[i] || '')}</figcaption></figure>`).join('')}</div>`
+      : `<img class="res-photo" src="${esc(urls[0])}" alt="Scanned photo">`;
+    S.currentScan = scan;
+    $('#resultBody').innerHTML = `
       ${scan.demo ? '<div class="demo-note">Demo result. Add ANTHROPIC_API_KEY to the .env file for real AI diagnosis.</div>' : ''}
       <div class="res-head">
         <div><h3>${esc(r.plant_common_name || 'Unknown plant')}</h3><div class="latin">${esc(r.plant_scientific_name || '')}</div></div>
-        <em class="chip ${cls}">${label}</em>
+        <div class="chips"><em class="chip ${cls}">${label}</em>${urgency}</div>
       </div>
       <div class="conf"><i style="width:${conf}%"></i></div>
       <div class="res-meta">${meta}</div>
-      <img class="res-photo" src="${esc(scan.image_url)}" alt="Scanned photo">
+      ${photos}
+      ${scan.note ? `<blockquote class="user-note">${esc(scan.note)}</blockquote>` : ''}
       ${r.needs_retake ? '<div class="retake-note">The photo is not clear enough. Please retake it with better light and focus.</div>' : ''}
       <p class="res-summary">${esc(r.summary)}</p>
-      ${issues ? `<div class="block-title">Findings</div>${issues}` : ''}
+      <button class="btn ghost sm" type="button" data-speak>${icon('speaker')}Read aloud</button>
+      ${issues ? `<div class="block-title">Disease details and treatment</div>${issues}` : ''}
+      ${prevent ? `<div class="block-title">How to prevent it</div><ul class="tips">${prevent}</ul>` : ''}
       ${tips ? `<div class="block-title">Care tips</div><ul class="tips">${tips}</ul>` : ''}
       ${r.watering_advice ? `<div class="water-advice">${icon('can')}<span>${esc(r.watering_advice)}</span></div>` : ''}`;
+    $('#askBox').hidden = false;
+    $('#askLog').replaceChildren();
   }
 
   function renderScans() {
@@ -387,7 +519,7 @@
           <button class="btn ghost sm" data-act="water" data-params='{"pot":${n}}'>${icon('drop')}Water now</button>
           <button class="btn ghost sm" data-act="soilcal" data-params='{"pot":${n},"point":"dry"}' title="Hold the sensor in the AIR first">Set dry <span class="raw-dry"></span></button>
           <button class="btn ghost sm" data-act="soilcal" data-params='{"pot":${n},"point":"wet"}' title="Put the sensor in WATER first">Set wet <span class="raw-wet"></span></button>
-          <span class="hint" style="margin:0;align-self:center">raw <b class="raw-now">-</b></span>
+          <span class="hint" style="margin:0;align-self:center">raw <b class="raw-now">-</b> · distance <b class="dist-now">-</b></span>
         </div>
       </div>`).join('');
   }
@@ -397,6 +529,7 @@
     $$('.pot-row').forEach((row) => {
       const p = d.pots[row.dataset.pot - 1];
       $('.raw-now', row).textContent = p.raw;
+      $('.dist-now', row).textContent = p.dist_cm > 0 ? p.dist_cm.toFixed(1) + ' cm' : '-';
       $('.raw-dry', row).textContent = `(${p.dry})`;
       $('.raw-wet', row).textContent = `(${p.wet})`;
     });

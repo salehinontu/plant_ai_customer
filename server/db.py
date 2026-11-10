@@ -28,6 +28,10 @@ class DB:
                     image TEXT, mime TEXT, result TEXT, health TEXT, plant TEXT, demo INTEGER);
                 """
             )
+            cols = [r["name"] for r in self.conn.execute("PRAGMA table_info(scans)")]
+            if "meta" not in cols:  # photos of a sweep scan, the grower's note, language
+                self.conn.execute("ALTER TABLE scans ADD COLUMN meta TEXT")
+            self.conn.commit()
 
     # ---- moisture ----
     def log_moisture(self, values: list[int]) -> None:
@@ -58,24 +62,36 @@ class DB:
         return [dict(r) for r in rows]
 
     # ---- scans ----
-    def add_scan(self, source: str, pot: Optional[int], image: str, mime: str, result: dict, demo: bool) -> int:
+    def add_scan(self, source: str, pot: Optional[int], image: str, mime: str, result: dict, demo: bool,
+                 meta: Optional[dict] = None) -> int:
         plant = result.get("plant_common_name", "")
         health = result.get("health_status", "unknown")
         with self.lock, self.conn:
             cur = self.conn.execute(
-                "INSERT INTO scans (ts,source,pot,image,mime,result,health,plant,demo) VALUES (?,?,?,?,?,?,?,?,?)",
-                (int(time.time()), source, pot, image, mime, json.dumps(result), health, plant, int(demo)),
+                "INSERT INTO scans (ts,source,pot,image,mime,result,health,plant,demo,meta) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (int(time.time()), source, pot, image, mime, json.dumps(result, ensure_ascii=False), health, plant,
+                 int(demo), json.dumps(meta or {}, ensure_ascii=False)),
             )
             return int(cur.lastrowid)
 
     @staticmethod
-    def _scan_row(r: sqlite3.Row) -> dict[str, Any]:
+    def scan_meta(r: sqlite3.Row) -> dict[str, Any]:
+        return json.loads(r["meta"]) if r["meta"] else {}
+
+    @classmethod
+    def _scan_row(cls, r: sqlite3.Row) -> dict[str, Any]:
+        meta = cls.scan_meta(r)
+        count = len(meta.get("images") or [1])
         return {
             "id": r["id"],
             "ts": r["ts"],
             "source": r["source"],
             "pot": r["pot"],
             "image_url": f"/api/scans/{r['id']}/image",
+            "image_urls": [f"/api/scans/{r['id']}/image?i={i}" for i in range(count)],
+            "labels": meta.get("labels") or [],
+            "note": meta.get("note", ""),
+            "lang": meta.get("lang", ""),
             "result": json.loads(r["result"]),
             "demo": bool(r["demo"]),
         }

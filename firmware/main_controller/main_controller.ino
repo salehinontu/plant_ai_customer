@@ -45,6 +45,7 @@ struct Settings {
   int16_t soilDry[3] = {2900, 2900, 2900};  // ADC value in air
   int16_t soilWet[3] = {1300, 1300, 1300};  // ADC value in water
   bool verifyPot = true;        // check with the ultrasonic sensor that a pot is below the nozzle before pumping
+  float potCm[3] = {0, 0, 0};   // distance from the sensor to each pot lid, measured while scanning
 };
 
 enum State : uint8_t { ST_IDLE, ST_HOMING, ST_CALIBRATING, ST_MOVING, ST_WATERING, ST_ERROR };
@@ -415,6 +416,18 @@ bool analyzeScan(String& err) {
   for (uint8_t k = 0; k < EXPECTED_POTS; k++)
     cfg.potPos[k] = ((long)(scanPotS[k] + scanPotE[k]) * SCAN_SAMPLE_STEPS) / 2;
   cfg.baselineCm = scanBaselineMm / 10.0f;
+
+  // typical (median) distance to each pot lid
+  for (uint8_t k = 0; k < EXPECTED_POTS; k++) {
+    uint16_t m = 0;
+    for (int i = scanPotS[k]; i <= scanPotE[k]; i++) if (scanMm[i]) sortBuf[m++] = scanMm[i];
+    if (m) {
+      std::sort(sortBuf, sortBuf + m);
+      cfg.potCm[k] = sortBuf[m / 2] / 10.0f;
+    } else {
+      cfg.potCm[k] = 0;
+    }
+  }
   return true;
 }
 
@@ -755,6 +768,7 @@ void handleStatus() {
     kvi(j, "threshold", cfg.dryPct[i]);
     kvi(j, "water_secs", cfg.waterSecs[i]);
     kvi(j, "pos", cfg.potPos[i]);
+    kvf(j, "dist_cm", cfg.potCm[i]);
     kvi(j, "dry", cfg.soilDry[i]);
     kvi(j, "wet", cfg.soilWet[i]);
     kvb(j, "pending", potPending[i]);
@@ -973,8 +987,11 @@ void handleTeach() {
     if (p < 0) return;
     if (pos <= 0) return replyErr(409, "Move the carriage away from Home (towards End) first");
     cfg.potPos[p] = pos;
+    float dcm = pingMedianCm(3);  // distance to this pot, if the ultrasonic sensor works
+    cfg.potCm[p] = dcm > 0 ? dcm : 0;
     saveSettings();
-    return replyOk("Pot " + String(p + 1) + " saved at " + String(pos) + " steps");
+    return replyOk("Pot " + String(p + 1) + " saved at " + String(pos) + " steps" +
+                   (dcm > 0 ? ", distance " + String(dcm, 1) + " cm" : ""));
   }
   if (what == "end") {
     if (pos <= 0) return replyErr(409, "Move the carriage towards End first");

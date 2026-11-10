@@ -2,6 +2,7 @@
 
 Run from the repo root:   python -m server
 """
+import json
 import logging
 import mimetypes
 import threading
@@ -12,6 +13,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from . import ai, config
 from .db import DB
@@ -51,20 +53,89 @@ def ingest_events(st: dict[str, Any]) -> None:
     STATE["last_event"] = data.get("last_id", last_id)
 
 
-def run_diagnosis(image: bytes, mime: str, source: str, pot: Optional[int]) -> dict[str, Any]:
+PROGRESS: dict[str, Any] = {"running": False, "step": 0, "total": 0, "text": "", "error": ""}
+
+
+def run_diagnosis(photos: list[tuple[bytes, str, str]], source: str, pot: Optional[int], note: str = "",
+                  lang: str = config.AI_LANG) -> dict[str, Any]:
+    """photos = [(bytes, mime, label), ...]. Asks the AI, saves the photos and the result, returns the scan."""
     context: dict[str, Any] = {"pot": pot}
     dev = STATE["device"]
     if pot and dev:
         context["moisture"] = next((p["moisture"] for p in dev.get("pots", []) if p["id"] == pot), None)
     try:
         # the simulator's cartoon leaf is not a photo - never spend API credits on it
-        result, demo = ai.diagnose(image, mime, context, force_demo=mime == "image/svg+xml")
+        result, demo = ai.diagnose(photos, context, note, lang,
+                                   force_demo=any(m == "image/svg+xml" for _, m, _ in photos))
     except ai.AIError as e:
         raise HTTPException(502, str(e)) from e
-    name = f"{int(time.time() * 1000)}{mimetypes.guess_extension(mime) or '.jpg'}"
-    (config.SCANS_DIR / name).write_bytes(image)
-    scan_id = db.add_scan(source, pot, name, mime, result, demo)
+    stamp = int(time.time() * 1000)
+    names = []
+    for i, (img, mime, _) in enumerate(photos):
+        name = f"{stamp}_{i}{mimetypes.guess_extension(mime) or '.jpg'}"
+        (config.SCANS_DIR / name).write_bytes(img)
+        names.append(name)
+    meta = {"images": names, "mimes": [m for _, m, _ in photos], "labels": [lb for _, _, lb in photos],
+            "note": note.strip(), "lang": lang}
+    scan_id = db.add_scan(source, pot, names[0], photos[0][1], result, demo, meta)
     return db.scan_dict(scan_id) or {}
+
+
+# The plant on the turntable is looked at from four sides while the turntable does
+# +180 deg, back to centre, -180 deg, back to centre (the cable never twists more than half a turn).
+# (label, degrees to rotate first, take a photo afterwards?)
+SWEEP_PLAN = [
+    ("front (0°)", 0, True),
+    ("turned +90°", 90, True),
+    ("turned +180° (back)", 90, True),
+    ("back to centre", -180, False),
+    ("turned -90°", -90, True),
+    ("turned -180°", -90, False),
+    ("back to centre", 180, False),
+]
+
+
+def wait_turntable(timeout: float = 40.0) -> None:
+    time.sleep(0.4)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        tt = (device.status() or {}).get("turntable") or {}
+        if not tt.get("busy"):
+            return
+        time.sleep(0.4)
+    raise DeviceError("The turntable did not stop moving in time", 504)
+
+
+def sweep_scan(pot: Optional[int], note: str, lang: str) -> dict[str, Any]:
+    photos: list[tuple[bytes, str, str]] = []
+    turned = 0
+    total = len(SWEEP_PLAN)
+    PROGRESS.update(running=True, step=0, total=total, text="Starting", error="")
+    try:
+        for i, (label, deg, shoot) in enumerate(SWEEP_PLAN, 1):
+            PROGRESS.update(step=i, text=f"{i}/{total}: {label}")
+            if deg:
+                device.command("turntable", {"deg": deg})
+                turned += deg
+                wait_turntable()
+            if shoot:
+                time.sleep(0.8)  # let the plant and the camera exposure settle
+                img, mime = camera.snapshot(hq=True)
+                photos.append((img, mime.split(";")[0], label))
+        STATE["cam_online"] = True
+        PROGRESS.update(step=total, text="Asking the AI…")
+        return run_diagnosis(photos, "sweep", pot, note, lang)
+    except Exception as e:  # noqa: BLE001
+        PROGRESS["error"] = str(getattr(e, "detail", e))
+        if turned:  # best effort: bring the turntable back to where it started
+            try:
+                device.command("turntable", {"deg": -turned})
+                wait_turntable()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    finally:
+        PROGRESS["running"] = False
 
 
 def poll_loop() -> None:
@@ -89,7 +160,7 @@ def poll_loop() -> None:
             try:
                 img, mime = camera.snapshot(hq=True)
                 with scan_lock:
-                    run_diagnosis(img, mime.split(";")[0], "auto", None)
+                    run_diagnosis([(img, mime.split(";")[0], "automatic photo")], "auto", None)
             except Exception as e:  # noqa: BLE001
                 log.warning("automatic scan failed: %s", e)
         time.sleep(2.0)
@@ -112,6 +183,15 @@ app = FastAPI(title="Plant Rail", lifespan=lifespan)
 @app.exception_handler(DeviceError)
 async def device_error_handler(_, exc: DeviceError):
     return JSONResponse({"detail": str(exc)}, status_code=exc.status)
+
+
+@app.middleware("http")
+async def always_fresh_site(request, call_next):
+    """Make the browser re-check the website files on every load, so a new version is never mixed with an old one."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.get("/api/status")
@@ -156,8 +236,14 @@ def api_snapshot(hq: int = 0, flash: int = 0):
     return Response(img, media_type=mime.split(";")[0], headers={"Cache-Control": "no-store"})
 
 
+def pick_lang(lang: Optional[str]) -> str:
+    return "en" if (lang or config.AI_LANG) == "en" else "bn"
+
+
 @app.post("/api/diagnose")
-def api_diagnose(pot: Optional[int] = Form(None), file: Optional[UploadFile] = File(None)):
+def api_diagnose(pot: Optional[int] = Form(None), note: str = Form(""), lang: Optional[str] = Form(None),
+                 file: Optional[UploadFile] = File(None)):
+    """One photo (from the camera, or uploaded) + the grower's note, in Bangla or English."""
     if pot is not None and pot not in (1, 2, 3):
         raise HTTPException(400, "pot must be 1, 2 or 3")
     if not scan_lock.acquire(blocking=False):
@@ -168,17 +254,60 @@ def api_diagnose(pot: Optional[int] = Form(None), file: Optional[UploadFile] = F
             if mime not in ALLOWED_IMAGES:
                 raise HTTPException(415, "Please upload a JPEG, PNG, WebP or GIF image")
             img = file.file.read(config.MAX_IMAGE_BYTES + 1)
-            source = "upload"
+            source, label = "upload", "photo uploaded by the grower"
         else:
             img, mime = camera.snapshot(hq=True)
             mime = mime.split(";")[0]
-            source = "camera"
+            source, label = "camera", "camera photo"
             STATE["cam_online"] = True
         if len(img) > config.MAX_IMAGE_BYTES:
             raise HTTPException(413, "Image is larger than 5 MB - please use a smaller photo")
-        return run_diagnosis(img, mime, source, pot)
+        return run_diagnosis([(img, mime, label)], source, pot, note, pick_lang(lang))
     finally:
         scan_lock.release()
+
+
+@app.post("/api/scan/sweep")
+def api_sweep(pot: Optional[int] = Form(2), note: str = Form(""), lang: Optional[str] = Form(None)):
+    """Turn the plant through +180 / -180 deg, photograph it from four sides and diagnose it."""
+    if pot is not None and pot not in (1, 2, 3):
+        raise HTTPException(400, "pot must be 1, 2 or 3")
+    if not scan_lock.acquire(blocking=False):
+        raise HTTPException(409, "A scan is already running")
+    try:
+        return sweep_scan(pot, note, pick_lang(lang))
+    finally:
+        scan_lock.release()
+
+
+@app.get("/api/scan/progress")
+def api_progress():
+    return dict(PROGRESS)
+
+
+class AskBody(BaseModel):
+    question: str
+    scan_id: Optional[int] = None
+    lang: Optional[str] = None
+
+
+@app.post("/api/ask")
+def api_ask(body: AskBody):
+    """Follow-up question about a diagnosis (typed or dictated, Bangla or English)."""
+    if not body.question.strip():
+        raise HTTPException(400, "Please write or say a question")
+    if body.scan_id:
+        row = db.get_scan(body.scan_id)
+    else:
+        latest = db.list_scans(1)
+        row = db.get_scan(latest[0]["id"]) if latest else None
+    if not row:
+        raise HTTPException(404, "Scan a plant first, then ask about the result")
+    try:
+        answer, demo = ai.ask(body.question, json.loads(row["result"]), pick_lang(body.lang), force_demo=config.MOCK)
+    except ai.AIError as e:
+        raise HTTPException(502, str(e)) from e
+    return {"answer": answer, "demo": demo}
 
 
 @app.get("/api/scans")
@@ -187,14 +316,19 @@ def api_scans(limit: int = 24):
 
 
 @app.get("/api/scans/{scan_id}/image")
-def api_scan_image(scan_id: int):
+def api_scan_image(scan_id: int, i: int = 0):
     row = db.get_scan(scan_id)
     if not row:
         raise HTTPException(404, "No such scan")
-    path = config.SCANS_DIR / row["image"]
+    meta = db.scan_meta(row)
+    names = meta.get("images") or [row["image"]]
+    mimes = meta.get("mimes") or [row["mime"]]
+    if i < 0 or i >= len(names):
+        raise HTTPException(404, "No such photo")
+    path = config.SCANS_DIR / names[i]
     if not path.is_file():
         raise HTTPException(404, "Image file is missing")
-    return FileResponse(path, media_type=row["mime"])
+    return FileResponse(path, media_type=mimes[i])
 
 
 @app.get("/api/history/moisture")

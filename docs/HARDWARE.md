@@ -58,6 +58,8 @@ Still free for later: 5, 15, 16, 17, 2, 36 (VP), 39 (VN).
 | TRIG | GPIO 25 |
 | ECHO | GPIO 35 **through a divider** |
 
+**Power the HC-SR04 from 5 V, not 3.3 V.** On 3.3 V many modules do not work properly and return a constant short pulse (about 53 µs, "1 cm") whatever is in front of them.
+
 ECHO outputs 5 V but ESP32 pins are 3.3 V only. Build a divider:
 
 ```
