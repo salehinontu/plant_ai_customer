@@ -14,7 +14,7 @@
 //
 //  Sensors: the normal OV2640 gives JPEG directly. Some cheap boards carry a sensor that cannot
 //  output JPEG (OV7670, GC0308, ...; error "JPEG format is not supported on this sensor", 0x106).
-//  For those the sketch switches to RGB565 (max 640x480) and converts every frame to JPEG itself.
+//  For those the sketch switches to RGB565 and converts every frame to JPEG itself (see RGB_SIZE).
 // ============================================================================
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -46,6 +46,10 @@
 
 static const framesize_t NORMAL_SIZE = FRAMESIZE_SVGA;  // 800x600
 static const framesize_t HQ_SIZE = FRAMESIZE_UXGA;      // 1600x1200
+// Sensors without JPEG (e.g. GC2145, PID 0x2145) deliver RGB565 frames that are converted here.
+// One size for everything, because the frame buffer is allocated once: XGA = 1024x768 (1.5 MB of PSRAM).
+// If the camera then fails with "no memory", use FRAMESIZE_SVGA (800x600) or FRAMESIZE_VGA (640x480).
+static const framesize_t RGB_SIZE = FRAMESIZE_XGA;
 
 static bool jpegSensor = true;  // false: frames are converted to JPEG in software
 static httpd_handle_t httpMain = NULL;
@@ -207,10 +211,10 @@ static bool startCamera() {
 
   esp_err_t err = esp_camera_init(&config);
   if (err == ESP_ERR_NOT_SUPPORTED) {  // 0x106: this sensor cannot output JPEG (OV7670, GC0308, ...)
-    Serial.println("Sensor has no JPEG output: using RGB565 (max 640x480) and converting to JPEG here");
+    Serial.println("Sensor has no JPEG output: using RGB565 and converting to JPEG here");
     esp_camera_deinit();
     config.pixel_format = PIXFORMAT_RGB565;
-    config.frame_size = FRAMESIZE_VGA;
+    config.frame_size = RGB_SIZE;
     config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     jpegSensor = false;
