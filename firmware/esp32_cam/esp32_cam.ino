@@ -11,11 +11,16 @@
 //    http://plantcam.local/status           small JSON health report
 //
 //  Board: "AI Thinker ESP32-CAM"   (needs PSRAM, which this board has)
+//
+//  Sensors: the normal OV2640 gives JPEG directly. Some cheap boards carry a sensor that cannot
+//  output JPEG (OV7670, GC0308, ...; error "JPEG format is not supported on this sensor", 0x106).
+//  For those the sketch switches to RGB565 (max 640x480) and converts every frame to JPEG itself.
 // ============================================================================
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include "esp_camera.h"
 #include "esp_http_server.h"
+#include "img_converters.h"
 #include "secrets.h"
 
 #define HOSTNAME "plantcam"
@@ -42,6 +47,7 @@
 static const framesize_t NORMAL_SIZE = FRAMESIZE_SVGA;  // 800x600
 static const framesize_t HQ_SIZE = FRAMESIZE_UXGA;      // 1600x1200
 
+static bool jpegSensor = true;  // false: frames are converted to JPEG in software
 static httpd_handle_t httpMain = NULL;
 static httpd_handle_t httpStream = NULL;
 
@@ -62,8 +68,21 @@ static void setSize(framesize_t s) {
   if (sensor) sensor->set_framesize(sensor, s);
 }
 
+// Gives a JPEG for a frame: the frame itself for JPEG sensors, a converted copy otherwise.
+// When *mustFree is true the caller frees *out with free().
+static bool frameToJpeg(camera_fb_t* fb, uint8_t** out, size_t* len, bool* mustFree) {
+  if (fb->format == PIXFORMAT_JPEG) {
+    *out = fb->buf;
+    *len = fb->len;
+    *mustFree = false;
+    return true;
+  }
+  *mustFree = true;
+  return frame2jpg(fb, 85, out, len);
+}
+
 static esp_err_t captureHandler(httpd_req_t* req) {
-  bool hq = queryHas(req, "hq");
+  bool hq = queryHas(req, "hq") && jpegSensor;  // sensors without JPEG are limited to 640x480
   bool flash = queryHas(req, "flash");
 
   if (hq) setSize(HQ_SIZE);
@@ -78,14 +97,19 @@ static esp_err_t captureHandler(httpd_req_t* req) {
   if (flash) digitalWrite(FLASH_LED_PIN, LOW);
   if (hq) setSize(NORMAL_SIZE);
 
-  if (!fb) {
+  uint8_t* jpg = NULL;
+  size_t jlen = 0;
+  bool mustFree = false;
+  if (!fb || !frameToJpeg(fb, &jpg, &jlen, &mustFree)) {
+    if (fb) esp_camera_fb_return(fb);
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Camera capture failed");
     return ESP_FAIL;
   }
   httpd_resp_set_type(req, "image/jpeg");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-  esp_err_t res = httpd_resp_send(req, (const char*)fb->buf, fb->len);
+  esp_err_t res = httpd_resp_send(req, (const char*)jpg, jlen);
+  if (mustFree) free(jpg);
   esp_camera_fb_return(fb);
   return res;
 }
@@ -99,12 +123,17 @@ static esp_err_t streamHandler(httpd_req_t* req) {
   while (true) {
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) { res = ESP_FAIL; break; }
+    uint8_t* jpg = NULL;
+    size_t jlen = 0;
+    bool mustFree = false;
+    if (!frameToJpeg(fb, &jpg, &jlen, &mustFree)) { esp_camera_fb_return(fb); res = ESP_FAIL; break; }
     res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
     if (res == ESP_OK) {
-      size_t hlen = snprintf(part, sizeof(part), STREAM_PART, (unsigned)fb->len);
+      size_t hlen = snprintf(part, sizeof(part), STREAM_PART, (unsigned)jlen);
       res = httpd_resp_send_chunk(req, part, hlen);
     }
-    if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char*)fb->buf, fb->len);
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char*)jpg, jlen);
+    if (mustFree) free(jpg);
     esp_camera_fb_return(fb);
     if (res != ESP_OK) break;  // client closed the stream
   }
@@ -112,10 +141,12 @@ static esp_err_t streamHandler(httpd_req_t* req) {
 }
 
 static esp_err_t statusHandler(httpd_req_t* req) {
-  char body[160];
-  snprintf(body, sizeof(body), "{\"ok\":true,\"uptime_s\":%lu,\"rssi\":%d,\"ip\":\"%s\",\"psram\":%s}",
+  sensor_t* s = esp_camera_sensor_get();
+  char body[200];
+  snprintf(body, sizeof(body),
+           "{\"ok\":true,\"uptime_s\":%lu,\"rssi\":%d,\"ip\":\"%s\",\"psram\":%s,\"sensor_pid\":%d,\"jpeg\":%s}",
            (unsigned long)(millis() / 1000), WiFi.RSSI(), WiFi.localIP().toString().c_str(),
-           psramFound() ? "true" : "false");
+           psramFound() ? "true" : "false", s ? (int)s->id.PID : 0, jpegSensor ? "true" : "false");
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
@@ -175,12 +206,23 @@ static bool startCamera() {
   }
 
   esp_err_t err = esp_camera_init(&config);
+  if (err == ESP_ERR_NOT_SUPPORTED) {  // 0x106: this sensor cannot output JPEG (OV7670, GC0308, ...)
+    Serial.println("Sensor has no JPEG output: using RGB565 (max 640x480) and converting to JPEG here");
+    esp_camera_deinit();
+    config.pixel_format = PIXFORMAT_RGB565;
+    config.frame_size = FRAMESIZE_VGA;
+    config.fb_count = 1;
+    config.fb_location = CAMERA_FB_IN_PSRAM;
+    jpegSensor = false;
+    err = esp_camera_init(&config);
+  }
   if (err != ESP_OK) {
     Serial.printf("Camera init failed 0x%x\n", err);
     return false;
   }
   sensor_t* s = esp_camera_sensor_get();
   if (s) {
+    Serial.printf("Camera sensor PID 0x%x, %s\n", s->id.PID, jpegSensor ? "JPEG output" : "RGB565 converted to JPEG");
     s->set_vflip(s, 0);    // set to 1 if the picture is upside down
     s->set_hmirror(s, 0);
   }

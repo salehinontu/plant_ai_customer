@@ -142,6 +142,7 @@ All on the ESP32 (port 80). `POST` calls need the header `X-Api-Key`.
 | Board will not boot / flash | unplug the lower motor IN2 wire (GPIO 12) while flashing |
 | Random resets | stronger 5 V supply, common ground, capacitor across the pump supply |
 | Camera image upside down | `set_vflip` in `esp32_cam.ino` |
+| `JPEG format is not supported on this sensor` (0x106) | the board carries a cheap sensor without JPEG (OV7670 / GC0308 ...). The sketch now falls back to RGB565 and converts frames itself (max 640x480). An OV2640 module gives much sharper photos for disease diagnosis |
 
 ## Status
 
