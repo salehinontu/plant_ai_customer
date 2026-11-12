@@ -49,6 +49,9 @@ struct Settings {
   float potCm[3] = {0, 0, 0};   // distance from the sensor to each pot lid, measured while scanning
   float effDeltaCm = 3.0f;      // the "pot below me" threshold actually used (adapted to the scan)
   bool pumpActiveLow = PUMP_ACTIVE_LOW;  // relay type, can be changed from the website
+  bool autoCal = false;         // the pots were found by the automatic scan (IR + ultrasonic) -> position guard is on
+  int32_t potLo[3] = {0, 0, 0}; // where each pot lid starts / ends along the rail (steps), from the scan
+  int32_t potHi[3] = {0, 0, 0};
 };
 
 enum State : uint8_t { ST_IDLE, ST_HOMING, ST_CALIBRATING, ST_MOVING, ST_WATERING, ST_ERROR };
@@ -110,6 +113,15 @@ long phasePos = 0;            // position at the start of the current homing pha
 bool endArmed = false;
 IrFilter irH, irE;            // debounced Home / End sensors
 bool potPending[3] = {false, false, false};
+
+// position guard (carriage moved by hand / lost steps)
+uint8_t recoverTries = 0;     // "go Home and try again" attempts used by the current job
+uint8_t guardStrikes = 0;     // guard-triggered re-homes since the last finished job / user command
+uint32_t guardSince = 0;      // when the IR disagreement began (0 = none)
+uint32_t guardCooldownUntil = 0;
+uint8_t guardUsBad = 0;       // consecutive ultrasonic readings that disagree with the scan
+long homeZoneSteps = 0;       // width of the IR 1 detection zone, measured while homing
+void guardPing(float d);
 
 // soil
 float soilEma[3] = {0, 0, 0};
@@ -318,6 +330,7 @@ void distanceService() {
   if (millis() - distStamp < 500) return;
   distStamp = millis();
   distNow = pingCm();
+  guardPing(distNow);
 }
 
 // Is a pot below the sensor? (distance clearly differs from the empty-base reading)
@@ -348,11 +361,14 @@ void clearPending() { for (uint8_t i = 0; i < 3; i++) potPending[i] = false; }
 void clearError() {
   if (state == ST_ERROR) { state = ST_IDLE; statusMsg = "Idle"; }
   errorMsg = "";
+  guardStrikes = 0;  // every user command gives the position guard a fresh start
+  guardUsBad = 0;
 }
 
 void fail(const String& msg) {
   // after a failed homing / scan the position reference cannot be trusted any more
   if (curActive && (cur.type == CMD_HOME || cur.type == CMD_CALIBRATE)) homed = false;
+  recoverTries = 0;
   rail.stopNow();
   rail.release();
   pumpSet(false);
@@ -369,6 +385,7 @@ void fail(const String& msg) {
 }
 
 void stopAll() {
+  recoverTries = 0;
   rail.stopNow();
   rail.release();
   pumpSet(false);
@@ -395,6 +412,111 @@ long potTarget(uint8_t pot) {
   if (t < 0) t = 0;
   if (cfg.railSteps > 0 && t > cfg.railSteps) t = cfg.railSteps;
   return t;
+}
+
+// ----------------------------------------------------------------------------
+//  Position guard
+// ----------------------------------------------------------------------------
+// The 28BYJ-48 has no encoder: the position is only a step counter. If the carriage is pushed by hand, or a step
+// is lost, the counter is wrong. The IR sensors and the ultrasonic scan from the calibration notice that, and the
+// carriage goes back Home, which re-zeroes the counter on the IR 1 edge. Pot positions are stored relative to Home,
+// so they are right again afterwards. Only active after an automatic calibration (cfg.autoCal): the sensors have
+// proven themselves then. After Manual setup nothing here runs and the old behaviour is unchanged.
+static long homeTol() {  // how far the IR sensors may disagree with the counted position
+  long t = 2 * homeZoneSteps;
+  return t > POS_TOL_STEPS ? t : POS_TOL_STEPS;
+}
+
+bool queueHasHome() {
+  if (curActive && cur.type == CMD_HOME) return true;
+  for (uint8_t i = 0; i < qCount; i++) if (queue[i].type == CMD_HOME) return true;
+  return false;
+}
+
+// A job always starts from a fresh Home reference (unless a Home is already queued or running, or a job is underway).
+void queueHomeFirst() {
+  if (queueHasHome()) return;
+  if (!homed || (qCount == 0 && !curActive)) qPush(CMD_HOME);
+}
+
+bool qPushFront(const Cmd& c) {
+  if (qCount >= QUEUE_MAX) return false;
+  for (int i = qCount; i > 0; i--) queue[i] = queue[i - 1];
+  queue[0] = c;
+  qCount++;
+  return true;
+}
+
+// The running command went wrong because the counted position was wrong (a limit sensor met too early, no pot
+// under the nozzle). Go Home, then repeat the same command once. Returns false when it should simply fail.
+bool recoverRetry(const char* why) {
+  if (!cfg.autoCal || recoverTries >= 1 || qCount + 3 > QUEUE_MAX) return false;
+  recoverTries++;
+  Cmd again = cur;
+  rail.stopNow();
+  homed = false;
+  qPushFront(again);
+  if (again.type == CMD_PUMP) qPushFront(Cmd{CMD_GOTO, again.pot, 0, false, 0});
+  qPushFront(Cmd{CMD_HOME, 0, 0, false, 0});
+  curActive = false;
+  activePot = 0;
+  state = ST_IDLE;
+  statusMsg = "Lost position - going Home";
+  addEvent("recover", again.pot + 1, 0, 0, why);
+  Serial.println(String("[RECOVER] ") + why);
+  return true;
+}
+
+// +1: a pot lid should be under the ultrasonic sensor here, -1: the empty base, 0: not sure
+// (near Home, where the IR 1 sensor decides, or near a pot edge).
+int expectedBelow(long pos) {
+  if (pos < 200) return 0;
+  for (uint8_t k = 0; k < EXPECTED_POTS; k++) {
+    if (cfg.potHi[k] <= cfg.potLo[k]) return 0;
+    if (pos >= cfg.potLo[k] + GUARD_EDGE_STEPS && pos <= cfg.potHi[k] - GUARD_EDGE_STEPS) return 1;
+    if (pos > cfg.potLo[k] - GUARD_EDGE_STEPS && pos < cfg.potHi[k] + GUARD_EDGE_STEPS) return 0;
+  }
+  return -1;
+}
+
+static void guardTrip(const char* why) {
+  guardStrikes++;
+  guardCooldownUntil = millis() + GUARD_COOLDOWN_MS;
+  guardSince = 0;
+  guardUsBad = 0;
+  homed = false;
+  addEvent("moved", 0, 0, 0, why);
+  statusMsg = "Moved by hand - going Home";
+  Serial.println(String("[GUARD] ") + why);
+  qPush(CMD_HOME);
+  if (guardStrikes >= GUARD_MAX_STRIKES) addEvent("moved", 0, 0, 0, "Position guard paused until the next job");
+}
+
+static bool guardActive() {
+  return cfg.autoCal && homed && state == ST_IDLE && !curActive && qCount == 0 && !rail.isRunning() &&
+         guardStrikes < GUARD_MAX_STRIKES && (int32_t)(millis() - guardCooldownUntil) >= 0;
+}
+
+// Called from loop(): the IR sensors against the counted position.
+void guardService() {
+  if (!guardActive()) { guardSince = 0; return; }
+  long pos = rail.position();
+  const char* why = nullptr;
+  if (labs(pos) <= 20 && !irHome()) why = "Carriage left the Home sensor";
+  else if (pos > homeTol() && irHome()) why = "Home sensor sees the carriage away from Home";
+  else if (cfg.railSteps > 0 && irEnd() && pos < cfg.railSteps - homeTol()) why = "End sensor sees the carriage away from End";
+  if (!why) { guardSince = 0; return; }
+  if (guardSince == 0) { guardSince = millis(); return; }
+  if (millis() - guardSince >= GUARD_IR_MS) guardTrip(why);
+}
+
+// Called after every idle ultrasonic reading: does it match what the calibration scan saw at this position?
+void guardPing(float d) {
+  if (!guardActive() || cfg.baselineCm <= 0 || cfg.potHi[0] <= 0) { guardUsBad = 0; return; }
+  if (d <= 0) return;  // no echo: no information either way
+  int want = expectedBelow(rail.position());
+  if (want == 0 || (want > 0) == potBelow(d)) { guardUsBad = 0; return; }
+  if (++guardUsBad >= GUARD_US_COUNT) guardTrip(want > 0 ? "No pot where the scan found one" : "A pot where the scan found none");
 }
 
 uint16_t median3(uint16_t a, uint16_t b, uint16_t c) {
@@ -520,8 +642,11 @@ bool analyzeScan(String& err) {
     return false;
   }
 
-  for (uint8_t k = 0; k < EXPECTED_POTS; k++)
+  for (uint8_t k = 0; k < EXPECTED_POTS; k++) {
     cfg.potPos[k] = ((long)(scanPotS[k] + scanPotE[k]) * SCAN_SAMPLE_STEPS) / 2;
+    cfg.potLo[k] = (long)scanPotS[k] * SCAN_SAMPLE_STEPS;          // for the position guard
+    cfg.potHi[k] = (long)(scanPotE[k] + 1) * SCAN_SAMPLE_STEPS;
+  }
   cfg.baselineCm = base / 10.0f;
   cfg.effDeltaCm = thr / 10.0f;
 
@@ -612,7 +737,11 @@ void stepCmd() {
         if (irHome()) { homePhase(3); return; }  // touched the sensor: step off, then come back slowly
         if (labs(rail.position() - cmdStartPos) > MAX_TRAVEL_STEPS) { fail("Home sensor not found - check IR 1 wiring and the white flag"); return; }
       } else if (phase == 1 || phase == 3) {  // step off the sensor
-        if (!irHome()) { homePhase(4); return; }
+        if (!irHome()) {
+          if (phase == 3 && moved > homeZoneSteps) homeZoneSteps = moved;  // near edge -> far edge = zone width
+          homePhase(4);
+          return;
+        }
         if (moved > HOME_BACKOFF_MAX) { fail("IR 1 stays on when moving away from it - check the flag size and the sensor sensitivity"); return; }
       } else {  // phase 4: slow final approach, the zero is the same edge every time
         if (irHome()) {
@@ -646,7 +775,9 @@ void stepCmd() {
         String err;
         if (!analyzeScan(err)) { fail(err); return; }
         cfg.calibrated = true;
+        cfg.autoCal = true;    // IR + ultrasonic found the pots: the position guard may watch the carriage now
         cfg.verifyPot = true;  // the ultrasonic sensor just worked, so use it
+        guardStrikes = 0;
         saveSettings();
         addEvent("calibrated", 0, 0, 0, "Rail " + String(cfg.railSteps) + " steps");
         parkPending = true;
@@ -660,7 +791,11 @@ void stepCmd() {
 
     case CMD_GOTO: {
       int dir = rail.direction();
-      if ((dir > 0 && irEnd()) || (dir < 0 && irHome())) { fail("Limit sensor hit while moving - recalibrate the rail"); return; }
+      if ((dir > 0 && irEnd()) || (dir < 0 && irHome())) {
+        if (recoverRetry("Limit sensor met too early - position was off")) return;  // home, then try once more
+        fail("Limit sensor hit while moving - recalibrate the rail");
+        return;
+      }
       if (!rail.isRunning()) finishCmd("At pot");
       break;
     }
@@ -672,6 +807,7 @@ void stepCmd() {
         if (!cur.force && cfg.verifyPot) {
           float d = pingMedianCm(5);
           if (!potBelow(d)) {
+            if (recoverRetry("No pot under the nozzle - going Home to try again")) return;
             fail("No pot detected under the nozzle (distance " + (d > 0 ? String(d, 1) + " cm" : String("n/a")) +
                  "). Water skipped.");
             return;
@@ -686,6 +822,8 @@ void stepCmd() {
           everWatered[cur.pot] = true;
           if (waterCountToday[cur.pot] < 255) waterCountToday[cur.pot]++;
           potPending[cur.pot] = false;
+          recoverTries = 0;
+          guardStrikes = 0;
           addEvent("water", cur.pot + 1, cur.secs, soilPct(cur.pot), "");
           parkPending = true;
           finishCmd("Watered");
@@ -728,7 +866,7 @@ bool enqueueWater(uint8_t pot, uint16_t secs, bool force, String& why) {
   if (QUEUE_MAX - qCount < 3) { why = "Queue is full"; return false; }
   if (secs < 1) secs = 1;
   if (secs > PUMP_MAX_S) secs = PUMP_MAX_S;
-  if (!homed) qPush(CMD_HOME);
+  queueHomeFirst();  // every watering job starts from a fresh Home reference
   qPush(CMD_GOTO, pot);
   qPush(CMD_PUMP, pot, secs, force);
   potPending[pot] = true;
@@ -843,6 +981,8 @@ void handleStatus() {
   kvs(j, "error", errorMsg);
   kvb(j, "homed", homed);
   kvb(j, "calibrated", cfg.calibrated);
+  kvb(j, "auto_cal", cfg.autoCal);
+  kvi(j, "guard_strikes", guardStrikes);
   kvi(j, "pos", rail.position());
   kvi(j, "rail_steps", cfg.railSteps);
   kvb(j, "ir_home", irHome());
@@ -1001,7 +1141,7 @@ void handleGoto() {
   if (p < 0) return;
   clearError();
   if (!cfg.calibrated) return replyErr(409, "Calibrate the rail first");
-  if (!homed) qPush(CMD_HOME);
+  if (!homed && !queueHasHome()) qPush(CMD_HOME);
   qPush(CMD_GOTO, p);
   replyOk("Moving to pot " + String(p + 1));
 }
@@ -1096,6 +1236,7 @@ void handleTeach() {
   if (state != ST_IDLE || curActive || rail.isRunning()) return replyErr(409, "Busy - wait for the carriage to stop");
   String what = server.arg("what");
   long pos = rail.position();
+  cfg.autoCal = false;  // hand-taught positions: the position guard stays off (it needs the automatic scan)
 
   if (what == "home") {
     rail.setPosition(0);
@@ -1285,7 +1426,7 @@ void setup() {
   nextCheckMs = millis() + FIRST_CHECK_DELAY_MS;
   state = ST_IDLE;
   statusMsg = "Ready";
-  if (AUTO_HOME_ON_BOOT) qPush(CMD_HOME);
+  if (AUTO_HOME_ON_BOOT || cfg.autoCal) qPush(CMD_HOME);  // the counter is unknown after a power cut: find Home
 }
 
 // The motors are stepped from a hardware timer every 250 us, independent of loop(). A 28BYJ-48 stalls
@@ -1315,6 +1456,7 @@ void loop() {
   sequencerService();
   soilService();
   distanceService();
+  guardService();
   schedulerService();
   wifiService();
 }

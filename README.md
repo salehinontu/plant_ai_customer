@@ -93,6 +93,21 @@ Open <http://localhost:8000> (from a phone: `http://<PC-IP>:8000`).
 
 Safety limits in firmware: pump max 30 s per run, 6 waterings per pot per day, stop on unexpected limit sensors, homing fails with a message if the carriage goes the wrong way.
 
+## Position guard: the carriage was moved by hand
+
+A 28BYJ-48 has no encoder, so the position is only a step counter. After an **automatic** *Calibrate rail* (IR sensors + ultrasonic scan) the firmware watches for a wrong counter and fixes it by itself:
+
+| What happens | What the controller does |
+|---|---|
+| Carriage is parked at Home and somebody pushes it off the IR 1 sensor (for 3 s) | goes back Home by itself |
+| IR 1 / IR 2 sees the carriage where the counter says it is not | goes Home |
+| Parked at a pot / on the empty base and the ultrasonic sensor sees something else than the calibration scan did there (10 readings in a row, not near a pot edge) | goes Home |
+| A limit sensor is met too early while driving to a pot, or no pot is under the nozzle | goes Home and tries the same move once more, then reports the error |
+| Every watering job | starts with a fresh Home (IR 1 re-zeroes the counter), and after the job it parks Home |
+| Power cut / reboot | homes at power-up |
+
+The pot positions are stored as steps from Home, so after the carriage is back Home they are right again. The website shows the *Carriage moved - going Home* / *Position recovered* events. Limits: a push of only a few centimetres inside the same pot or the same empty stretch cannot be seen by the sensors; the next watering job's fresh Home removes that error. After 3 guard re-homes without a job in between (for example a missing flag) the guard pauses and any command on the website re-arms it. It is **off after Manual setup** (hand-taught positions), and the tunables are in `config.h` (`POS_TOL_STEPS`, `GUARD_*`). Not tested on the real rig yet; the decision logic was checked with a simulation.
+
 ## Turntable sweep (lower motor)
 
 **Care → Turntable → 360° sweep** (or `POST /api/sweep`) does a full look around without ever winding the cable more than half a turn:
@@ -127,7 +142,7 @@ All on the ESP32 (port 80). `POST` calls need the header `X-Api-Key`.
 | `POST /api/goto?pot=N`, `/api/water?pot=N&secs=S`, `/api/check` | move / water / check all pots |
 | `POST /api/sweep`, `/api/turntable?deg=D` | turntable (lower motor): 360° sweep / manual rotate |
 | `POST /api/pump?secs=S`, `/api/jog?steps=N` | bench tools |
-| `POST /api/teach?what=home\|pot\|end\|done&pot=N` | manual set-up: jog, then save positions |
+| `POST /api/teach?what=home\|pot\|end\|done&pot=N` | manual set-up: jog, then save positions (switches the position guard off) |
 | `POST /api/auto?on=1`, `/api/settings?…`, `/api/soilcal?pot=N&point=dry\|wet` | configuration |
 
 ## Troubleshooting

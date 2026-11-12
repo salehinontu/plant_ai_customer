@@ -51,7 +51,8 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 #define PUMP_ACTIVE_LOW true
 
 // Home the carriage automatically at power-up (leave false for the first bring-up).
-// The first watering job always homes first anyway.
+// After an automatic calibration the carriage homes at power-up anyway (the sensors are proven), and every
+// watering job homes first.
 #define AUTO_HOME_ON_BOOT false
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,19 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 #define SWEEP_DEG          180
 #define SWEEP_PAUSE_MS     800       // hold at every stop (time for the camera)
 #define MAX_TRAVEL_STEPS   40000L    // give up homing / scanning after this many steps (rail length safety)
+
+// ---------------------------------------------------------------------------
+//  POSITION GUARD  (active after an automatic "Calibrate rail", not after Manual setup)
+//  The stepper has no encoder, so a carriage pushed by hand (or a lost step) makes the step counter wrong.
+//  The IR sensors and the ultrasonic scan of the calibration notice that, and the carriage then goes Home by
+//  itself, which re-zeroes the counter. Every watering job also starts with a fresh Home.
+// ---------------------------------------------------------------------------
+#define POS_TOL_STEPS     1500       // IR sensor and counted position may disagree by this much before it counts as "moved"
+#define GUARD_IR_MS       3000       // the IR disagreement must last this long (ignores flicker at the sensor edge)
+#define GUARD_US_COUNT    10         // consecutive ultrasonic readings (0.5 s apart) that disagree with the scan
+#define GUARD_EDGE_STEPS  400        // "not sure" zone around every pot edge, where the ultrasonic check is skipped
+#define GUARD_COOLDOWN_MS 30000UL    // pause after a guard re-home
+#define GUARD_MAX_STRIKES 3          // after this many guard re-homes without a job in between the guard pauses
 
 // ---------------------------------------------------------------------------
 //  ULTRASONIC POT SCAN

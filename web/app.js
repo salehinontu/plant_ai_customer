@@ -729,6 +729,8 @@
     auto: ['pulse', 'ok', () => 'Automatic check', (e) => e.msg],
     calibrated: ['ruler', 'ok', () => 'Rail calibrated', (e) => e.msg],
     error: ['warn', 'err', () => 'Error', (e) => e.msg],
+    moved: ['warn', '', () => 'Carriage moved - going Home', (e) => e.msg],
+    recover: ['ruler', '', () => 'Position recovered', (e) => e.msg],
   };
 
   async function loadHistory() {
