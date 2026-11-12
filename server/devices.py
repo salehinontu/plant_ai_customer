@@ -64,6 +64,7 @@ class Device:
 class Camera:
     def __init__(self, base: str):
         self.base = base
+        self.lock = threading.Lock()  # the ESP32-CAM serves one picture at a time
 
     def snapshot(self, hq: bool = False, flash: bool = False) -> tuple[bytes, str]:
         params = {}
@@ -72,11 +73,76 @@ class Camera:
         if flash:
             params["flash"] = 1
         try:
-            r = requests.get(f"{self.base}/capture", params=params, timeout=12 if hq else 6)
+            with self.lock:
+                r = requests.get(f"{self.base}/capture", params=params, timeout=15 if hq else 8)
             r.raise_for_status()
         except requests.RequestException as e:
             raise DeviceError(f"Camera not reachable ({e.__class__.__name__})") from e
         return r.content, r.headers.get("Content-Type", "image/jpeg")
+
+
+class CameraFeed:
+    """Keeps the newest preview frame in memory so the website never waits for the (slow) ESP32-CAM.
+
+    One background thread fetches frames - but only while somebody is watching - and every browser
+    gets the cached frame at once. A browser asks for "a frame newer than id N" and is answered the
+    moment one exists, so the frame rate is whatever the camera can do, with no wasted polling.
+    """
+    WATCH_S = 12.0     # keep fetching this long after the last request
+    MIN_GAP_S = 0.15   # never hammer the camera faster than this
+
+    def __init__(self, camera: Any) -> None:
+        self.camera = camera
+        self.cond = threading.Condition()
+        self.frame: tuple[bytes, str] | None = None
+        self.frame_id = 0
+        self.frame_ts = 0.0
+        self.error = ""
+        self.online: bool | None = None
+        self.wanted_until = 0.0
+        self.started = False
+
+    def _start(self) -> None:
+        if not self.started:
+            self.started = True
+            threading.Thread(target=self._loop, daemon=True, name="camfeed").start()
+
+    def _loop(self) -> None:
+        while True:
+            if time.time() > self.wanted_until:
+                time.sleep(0.3)
+                continue
+            t0 = time.time()
+            try:
+                img, mime = self.camera.snapshot()
+                with self.cond:
+                    self.frame, self.frame_id, self.frame_ts = (img, mime), self.frame_id + 1, time.time()
+                    self.error, self.online = "", True
+                    self.cond.notify_all()
+            except DeviceError as e:
+                with self.cond:
+                    self.error, self.online = str(e), False
+                    self.cond.notify_all()
+                time.sleep(2.0)
+            time.sleep(max(0.0, self.MIN_GAP_S - (time.time() - t0)))
+
+    def get(self, after: int = 0, timeout: float = 6.0) -> tuple[bytes, str, int]:
+        """The newest frame with id > after (waits up to `timeout`). Raises DeviceError when there is none."""
+        self.wanted_until = time.time() + self.WATCH_S
+        self._start()
+        deadline = time.time() + timeout
+        with self.cond:
+            while True:
+                if self.frame and self.frame_id > after:
+                    return self.frame[0], self.frame[1], self.frame_id
+                if self.error and self.online is False:
+                    raise DeviceError(self.error)
+                left = deadline - time.time()
+                if left <= 0:
+                    if self.frame:   # nothing newer yet: hand out the old one rather than nothing
+                        return self.frame[0], self.frame[1], self.frame_id
+                    raise DeviceError("Camera did not answer in time")
+                self.cond.wait(left)
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +171,7 @@ class MockDevice:
         self.moist = [58.0, 23.0, 41.0]
         self.auto = True
         self.cfg = dict(check_min=2, soak_min=5, nozzle_offset=0, delta_cm=3.0, pot_closer=True,
-                        park=True, verify=True, rail_speed=700, scan_speed=400)
+                        park=True, verify=True, rail_speed=600, scan_speed=300, pump_active_low=True)
         self.pots = [dict(threshold=35, water_secs=5, enabled=True, dry=2900, wet=1300) for _ in range(3)]
         self.state, self.message, self.error = "idle", "Ready", ""
         self.queue: list[dict[str, Any]] = []
@@ -406,6 +472,8 @@ class MockDevice:
                 for k in ("pot_closer", "park", "verify"):
                     if k in params:
                         self.cfg[k] = str(params[k]) == "1"
+                if "pump_low" in params:
+                    self.cfg["pump_active_low"] = str(params["pump_low"]) == "1"
                 for i in range(3):
                     if f"t{i + 1}" in params:
                         self.pots[i]["threshold"] = int(params[f"t{i + 1}"])

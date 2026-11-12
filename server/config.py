@@ -17,6 +17,10 @@ ESP32_API_KEY = env("ESP32_API_KEY")
 CAM_URL = env("CAM_URL", "http://plantcam.local").rstrip("/")
 CAM_STREAM_URL = env("CAM_STREAM_URL", "http://plantcam.local:81/stream")
 
+# AI provider: auto = Gemini (free tier) if GEMINI_API_KEY is set, else Claude if ANTHROPIC_API_KEY is set, else demo
+AI_PROVIDER = env("AI_PROVIDER", "auto").lower()
+GEMINI_API_KEY = env("GEMINI_API_KEY") or env("GOOGLE_API_KEY")
+GEMINI_MODEL = env("GEMINI_MODEL")  # empty = pick the newest "flash" model the key can use
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = env("CLAUDE_MODEL", "claude-opus-5-5")
 AI_LANG = "en" if env("AI_LANGUAGE", "bn").lower() in ("en", "english") else "bn"  # default answer language

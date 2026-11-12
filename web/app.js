@@ -114,22 +114,28 @@
     $('span', pill).textContent = ok ? 'Camera' : 'Camera offline';
   }
 
-  async function camTick(now) {
+  let camId = 0;   // id of the newest frame we show; the server answers as soon as a newer one exists
+  async function camTick() {
     clearTimeout(camTimer);
     const wanted = !document.hidden && (S.tab === 'home' || S.tab === 'diagnosis') && !(S.live && S.tab === 'diagnosis');
     if (!wanted) { camTimer = setTimeout(camTick, 1500); return; }
     try {
-      const r = await fetch('/api/camera/snapshot?t=' + Date.now(), { cache: 'no-store' });
+      const r = await fetch('/api/camera/snapshot?after=' + camId, { cache: 'no-store' });
       if (!r.ok) throw new Error('camera');
-      const url = URL.createObjectURL(await r.blob());
-      $$('img.live').forEach((img) => { img.src = url; });
-      if (camUrl) URL.revokeObjectURL(camUrl);
-      camUrl = url;
+      const id = Number(r.headers.get('X-Frame-Id')) || 0;
+      const isNew = id !== camId;
+      if (isNew) {
+        const url = URL.createObjectURL(await r.blob());
+        $$('img.live').forEach((img) => { img.src = url; });
+        if (camUrl) URL.revokeObjectURL(camUrl);
+        camUrl = url;
+        camId = id;
+      }
       setCam(true);
-      camTimer = setTimeout(camTick, 2500);
+      camTimer = setTimeout(camTick, isNew ? 150 : 800);
     } catch {
       setCam(false);
-      camTimer = setTimeout(camTick, 6000);
+      camTimer = setTimeout(camTick, 5000);
     }
   }
 
@@ -330,7 +336,7 @@
       : `<img class="res-photo" src="${esc(urls[0])}" alt="Scanned photo">`;
     S.currentScan = scan;
     $('#resultBody').innerHTML = `
-      ${scan.demo ? '<div class="demo-note">Demo result. Add ANTHROPIC_API_KEY to the .env file for real AI diagnosis.</div>' : ''}
+      ${scan.demo ? '<div class="demo-note">Demo result. Add a free GEMINI_API_KEY to the .env file for real AI diagnosis.</div>' : ''}
       <div class="res-head">
         <div><h3>${esc(r.plant_common_name || 'Unknown plant')}</h3><div class="latin">${esc(r.plant_scientific_name || '')}</div></div>
         <div class="chips"><em class="chip ${cls}">${label}</em>${urgency}</div>
@@ -544,6 +550,7 @@
     const c = d.settings;
     set('check_min', c.check_min); set('soak_min', c.soak_min); set('nozzle_offset', c.nozzle_offset);
     set('delta_cm', c.delta_cm); set('pot_closer', c.pot_closer ? '1' : '0'); set('park', c.park ? '1' : '0'); set('verify', c.verify ? '1' : '0');
+    set('pump_low', c.pump_active_low ? '1' : '0'); set('rail_speed', c.rail_speed); set('scan_speed', c.scan_speed);
     d.pots.forEach((p) => { set('e' + p.id, p.enabled); set('t' + p.id, p.threshold); set('s' + p.id, p.water_secs); });
   }
 
@@ -575,8 +582,8 @@
     ai.className = 'pill ' + (s.ai.demo ? 'warn' : 'ok');
     $('span', ai).textContent = s.ai.demo ? 'AI demo' : 'AI ready';
     $('#aiHint').textContent = s.ai.demo
-      ? 'AI is in demo mode: add ANTHROPIC_API_KEY to the .env file for real diagnoses.'
-      : `Diagnosis by ${s.ai.model}.${s.auto_scan_hours ? ` Automatic scan every ${s.auto_scan_hours} h.` : ''}`;
+      ? 'AI is in demo mode: add a free GEMINI_API_KEY to the .env file for real diagnoses.'
+      : `Diagnosis by ${s.ai.provider === 'gemini' ? 'Google Gemini' : 'Claude'} (${s.ai.model}).${s.auto_scan_hours ? ` Automatic scan every ${s.auto_scan_hours} h.` : ''}`;
     $('#footMode').textContent = s.mock ? 'Simulator mode' : (d ? `Controller ${d.ip}` : 'Controller offline');
 
     const bar = $('#alertBar');

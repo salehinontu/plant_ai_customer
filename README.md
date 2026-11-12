@@ -4,7 +4,7 @@ An ESP32 rail carriage that waters three pots by itself, plus an ESP32-CAM that 
 
 * **Soil sensors decide.** Three capacitive sensors measure each pot; a pot below its threshold gets watered.
 * **The carriage finds the pots.** A stepper moves a rack carriage between two IR sensors (Home / End). An ultrasonic sensor on the carriage scans the rail once, finds the three pots, and later confirms a pot is really under the nozzle before the pump starts.
-* **The camera looks, AI diagnoses.** The ESP32-CAM takes a photo, Claude identifies the plant, spots disease / pests / nutrient problems and returns treatment steps and care tips.
+* **The camera looks, AI diagnoses.** The ESP32-CAM takes a photo, a vision AI (free Google Gemini, or Claude) identifies the plant, spots disease / pests / nutrient problems and returns treatment steps and care tips.
 * **A website shows it all**, styled after the "Scan Plants Fast" poster: live camera, moisture rings, rail diagram, diagnosis, history charts.
 
 ```
@@ -68,7 +68,8 @@ The first run creates `.env`. Fill in:
 |---|---|
 | `ESP32_URL`, `CAM_URL` | `http://plantrail.local` / `http://plantcam.local`, or the IPs from the Serial Monitor if `.local` does not resolve |
 | `ESP32_API_KEY` | same value as `API_KEY` in `secrets.h` |
-| `ANTHROPIC_API_KEY` | enables real AI diagnosis (see below) |
+| `GEMINI_API_KEY` | **free** key from <https://aistudio.google.com/apikey>: enables real AI diagnosis (see below) |
+| `ANTHROPIC_API_KEY` | optional paid alternative (Claude) |
 | `AUTO_SCAN_HOURS` | automatic camera scan every N hours (0 = off) |
 
 Open <http://localhost:8000> (from a phone: `http://<PC-IP>:8000`).
@@ -76,7 +77,7 @@ Open <http://localhost:8000> (from a phone: `http://<PC-IP>:8000`).
 ### e) Bring-up checklist (first time, in this order)
 1. **Care → Direction test.** Press `200 ▶`: the carriage must move towards the End sensor. If not, flip `INVERT_RAIL_DIR` in `config.h` (it is `true` by default in this repo because the author's carriage ran backwards with `false`).
 2. **IR sensors.** Move the flag by hand: the *IR sensors* tile on Home must switch to "At Home" / "At End".
-3. **Pump test**, with the pump in a cup. It must be off when idle; if it runs constantly, flip `PUMP_ACTIVE_LOW`.
+3. **Pump test**, with the pump in a cup. It must be off when idle. Wire the pump through **COM and NO**. Relay type is on the Care page (Behaviour); the default (active-low) is right for most blue relay boards. If the pump never starts, switch the type; if the relay LED is on while idle, see *Water pump* in [docs/HARDWARE.md](docs/HARDWARE.md).
 4. **Calibrate rail.** The carriage homes, travels to the End sensor while the ultrasonic sensor samples, and detects the three pots. The chart shows the scan; if the pot count is not 3, tune **Pot detection** / **Pots are closer / lower than the base** and run it again. Positions are saved in flash.
    **No working ultrasonic sensor or End sensor yet?** Use **Care → Manual setup** instead: jog the carriage to Home and press *Set Home here*, jog to each pot and press *Save pot N*, then *Finish*. No scan is needed; the "check for the pot with ultrasonic" option is then off until you switch it on.
 5. **Soil sensors.** For each pot hold the sensor in air → **Set dry**, in water → **Set wet**.
@@ -102,15 +103,15 @@ The centre is wherever the turntable stands when the sweep starts, and it holds 
 
 ## AI diagnosis
 
-* **360° plant scan** (Diagnosis page): the turntable under the middle pot turns +180° and back, then -180° and back, and the ESP32-CAM takes photos from four sides (0°, +90°, +180°, -90°). All four go to **Claude** in one request, together with the pot's soil-moisture reading and anything you typed or said.
+* **360° plant scan** (Diagnosis page): the turntable under the middle pot turns +180° and back, then -180° and back, and the ESP32-CAM takes photos from four sides (0°, +90°, +180°, -90°). All four go to the AI in one request, together with the pot's soil-moisture reading and anything you typed or said.
 * **Bangla and voice:** describe the problem in Bangla or English (type it, or press the microphone: Chrome / Edge speech recognition, works on `http://localhost:8000`, not on a phone over Wi-Fi). Pick the answer language with the switch (default Bangla, `AI_LANGUAGE=bn|en` in `.env`). **Read aloud** speaks the result with the browser's Bangla voice if the computer has one (Microsoft Edge usually does).
 * **Ask a follow-up** under the result ("how do I spray?", "কতদিন পর আবার দেব?"), by typing or speaking.
 * The answer is structured JSON: plant, health, urgency, each disease with symptoms / cause / treatment steps, prevention, care tips, watering advice.
 * Server calls: `POST /api/scan/sweep`, `POST /api/diagnose` (one photo or upload, with `note` and `lang`), `GET /api/scan/progress`, `POST /api/ask`.
-* The model is **Claude** (`claude-opus-5-5` by default, change with `CLAUDE_MODEL`).
-* Photos you scan or upload are sent to the Anthropic API and saved in `data/scans/` on the PC. Each scan is one paid API call.
-* Server-side fallback is enabled so a harmless plant photo that trips a safety classifier is re-run on a fallback model instead of failing.
-* Without `ANTHROPIC_API_KEY` the site runs in demo mode with canned answers.
+* **Free AI: Google Gemini.** Put a key from Google AI Studio into `.env` as `GEMINI_API_KEY` and restart the server; nothing else to set (`AI_PROVIDER=auto`). The newest "flash" model your key can use is picked automatically (override with `GEMINI_MODEL`). The free tier has request limits (the site says so when they are used up) and Google may use free-tier prompts and photos to improve its products, so do not send private photos. Not tested against the live Gemini service yet: only against a local stand-in, so report any error text you see.
+* **Claude** (paid) is used instead when only `ANTHROPIC_API_KEY` is set, or when `AI_PROVIDER=claude` (`CLAUDE_MODEL`, default `claude-opus-5-5`, with server-side fallback enabled).
+* Photos you scan or upload are sent to the chosen provider and saved in `data/scans/` on the PC.
+* Without any key the site runs in demo mode with canned answers.
 * It is decision support for a hobby grower, not a lab test.
 
 ## Controller REST API
@@ -142,6 +143,7 @@ All on the ESP32 (port 80). `POST` calls need the header `X-Api-Key`.
 | Board will not boot / flash | unplug the lower motor IN2 wire (GPIO 12) while flashing |
 | Random resets | stronger 5 V supply, common ground, capacitor across the pump supply |
 | Camera image upside down | `set_vflip` in `esp32_cam.ino` |
+| Website slow / camera picture lags | the server now keeps the newest camera frame in memory, so the page never waits for the camera. RGB-only sensors (GC2145) use a small 640x480 preview and the big 1024x768 size only for AI photos |
 | `JPEG format is not supported on this sensor` (0x106) | the board carries a sensor without JPEG output (GC2145, OV7670, GC0308 ...). The sketch falls back to RGB565 and converts the frames itself (1024x768, `RGB_SIZE`). Serial Monitor prints the sensor id (`0x2145` = GC2145, 2 MP) |
 
 ## Status

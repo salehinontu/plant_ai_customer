@@ -16,6 +16,7 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <algorithm>
+#include "esp_timer.h"
 
 #include "config.h"
 #include "secrets.h"
@@ -32,8 +33,8 @@ struct Settings {
   bool calibrated = false;
   uint16_t checkMin = 30;       // how often the soil is checked (minutes)
   uint16_t soakMin = 15;        // wait before the same pot may be watered again
-  uint16_t railSpeed = 700;     // steps/s while travelling
-  uint16_t scanSpeed = 400;     // steps/s while scanning
+  uint16_t railSpeed = 600;     // steps/s while travelling
+  uint16_t scanSpeed = 300;     // steps/s while scanning
   int16_t nozzleOffset = 0;     // steps between the ultrasonic sensor and the water nozzle
   float deltaCm = 3.0f;         // distance change that means "pot below me"
   float baselineCm = 0;
@@ -46,6 +47,8 @@ struct Settings {
   int16_t soilWet[3] = {1300, 1300, 1300};  // ADC value in water
   bool verifyPot = true;        // check with the ultrasonic sensor that a pot is below the nozzle before pumping
   float potCm[3] = {0, 0, 0};   // distance from the sensor to each pot lid, measured while scanning
+  float effDeltaCm = 3.0f;      // the "pot below me" threshold actually used (adapted to the scan)
+  bool pumpActiveLow = PUMP_ACTIVE_LOW;  // relay type, can be changed from the website
 };
 
 enum State : uint8_t { ST_IDLE, ST_HOMING, ST_CALIBRATING, ST_MOVING, ST_WATERING, ST_ERROR };
@@ -131,6 +134,8 @@ uint16_t scanN = 0;
 uint16_t scanValid = 0;       // readings with a real echo during the current scan
 static uint16_t sortBuf[MAX_SCAN];
 static uint8_t flagBuf[MAX_SCAN];
+struct Run { int s; int e; };   // one bump in the scan (declared up here: the Arduino IDE auto-generates prototypes above the code)
+#define MAX_RUNS 24
 long nextSamplePos = 0;
 float scanBaselineMm = 0, scanThrMm = 0;
 int scanPotS[EXPECTED_POTS], scanPotE[EXPECTED_POTS];
@@ -212,9 +217,25 @@ void kvs(String& j, const char* k, const String& v) { j += '"'; j += k; j += "\"
 // ----------------------------------------------------------------------------
 //  Pump
 // ----------------------------------------------------------------------------
+// Relay drive. The pump must be OFF whenever nothing asks for it, whatever the relay board is:
+//   active-HIGH board : ON = pin HIGH, OFF = pin LOW
+//   active-LOW board  : ON = pin LOW,  OFF = pin RELEASED (input, high impedance) - NOT driven HIGH.
+// Why released: most relay boards are powered from 5 V and have their own pull-up on IN. An ESP32 "HIGH" is only
+// 3.3 V, 1.7 V below that supply, which can keep the opto-coupler LED partly lit so the relay never switches off.
+// A released pin lets the board pull IN up to its own 5 V and the relay really drops out.
 void pumpSet(bool on) {
   pumpOn = on;
-  digitalWrite(PIN_PUMP, (on != PUMP_ACTIVE_LOW) ? HIGH : LOW);
+  if (cfg.pumpActiveLow) {
+    if (on) {
+      digitalWrite(PIN_PUMP, LOW);   // set the level first, then take the pin over: no glitch
+      pinMode(PIN_PUMP, OUTPUT);
+    } else {
+      pinMode(PIN_PUMP, INPUT);
+    }
+  } else {
+    digitalWrite(PIN_PUMP, on ? HIGH : LOW);
+    pinMode(PIN_PUMP, OUTPUT);
+  }
 }
 
 void pumpFor(uint32_t ms) {
@@ -230,19 +251,14 @@ void pumpService() {
 // ----------------------------------------------------------------------------
 //  Soil
 // ----------------------------------------------------------------------------
-int readSoilRawOnce(uint8_t i) {
-  uint32_t sum = 0;
-  for (uint8_t k = 0; k < 16; k++) { sum += analogRead(SOIL_PINS[i]); delayMicroseconds(150); }
-  return (int)(sum / 16);
-}
-
+// One quick sample per sensor every 20 ms, smoothed over about half a second. Never blocks the loop.
 void soilService() {
-  if (millis() - lastSoilMs < 1000) return;
+  if (millis() - lastSoilMs < 20) return;
   lastSoilMs = millis();
   for (uint8_t i = 0; i < 3; i++) {
-    int raw = readSoilRawOnce(i);
+    int raw = analogRead(SOIL_PINS[i]);
     if (!soilInit) soilEma[i] = raw;
-    else soilEma[i] += 0.25f * (raw - soilEma[i]);
+    else soilEma[i] += 0.04f * (raw - soilEma[i]);
   }
   soilInit = true;
   if (millis() - dayStartMs >= 86400000UL) {  // new 24 h window for the daily watering cap
@@ -307,7 +323,7 @@ void distanceService() {
 // Is a pot below the sensor? (distance clearly differs from the empty-base reading)
 bool potBelow(float cm) {
   if (cm <= 0 || cfg.baselineCm <= 0) return false;
-  float half = cfg.deltaCm * 0.5f;
+  float half = (cfg.effDeltaCm > 0 ? cfg.effDeltaCm : cfg.deltaCm) * 0.5f;
   return cfg.potCloser ? (cm <= cfg.baselineCm - half) : (cm >= cfg.baselineCm + half);
 }
 
@@ -388,7 +404,56 @@ uint16_t median3(uint16_t a, uint16_t b, uint16_t c) {
   return b;
 }
 
+static Run runLow[MAX_RUNS];    // candidates for "pots are closer than the base level"
+static Run runHigh[MAX_RUNS];   // candidates for "pots are lower than the base level"
+
+// Marks the samples that differ from the empty-base level and joins them into runs (= pot candidates).
+// Returns how many runs were stored in out[].
+static int findRuns(bool closer, float baseMm, float thrMm, Run* out) {
+  for (uint16_t i = 0; i < scanN; i++) {
+    uint16_t a = scanMm[i > 0 ? i - 1 : i], b = scanMm[i], c = scanMm[i + 1 < scanN ? i + 1 : i];
+    uint16_t m = median3(a, b, c);
+    bool dev = m && (closer ? (m < baseMm - thrMm) : (m > baseMm + thrMm));
+    flagBuf[i] = dev ? 1 : 0;
+  }
+  int total = 0, i = 0;
+  while (i < (int)scanN) {
+    if (!flagBuf[i]) { i++; continue; }
+    int s = i, e = i, gap = 0, j = i + 1;
+    while (j < (int)scanN) {
+      if (flagBuf[j]) { e = j; gap = 0; }
+      else if (++gap > MERGE_GAP) break;
+      j++;
+    }
+    if (e - s + 1 >= MIN_RUN && total < MAX_RUNS) out[total++] = Run{s, e};
+    i = e + 1;
+  }
+  return total;
+}
+
+// Moves the n longest runs to the front of r[] (longest first).
+static void longestFirst(Run* r, int count, int n) {
+  for (int k = 0; k < n && k < count; k++) {
+    int best = k;
+    for (int j = k + 1; j < count; j++)
+      if (r[j].e - r[j].s > r[best].e - r[best].s) best = j;
+    std::swap(r[k], r[best]);
+  }
+}
+
+static int runScore(Run* r, int count) {  // total length of the 3 longest runs
+  longestFirst(r, count, EXPECTED_POTS);
+  int sum = 0;
+  for (int k = 0; k < EXPECTED_POTS && k < count; k++) sum += r[k].e - r[k].s;
+  return sum;
+}
+
 // Find the pots in scanMm[]. Returns false and fills err when the scan does not look right.
+//  * "base" is the most common distance (the empty rail / floor), so it does not matter whether the pots are
+//    closer or lower than it - both directions are checked and the one with the clearest 3 bumps wins,
+//  * the "pot" threshold adapts to the real height difference seen in the scan,
+//  * small bumps (leaves, noise) are ignored: only the 3 longest runs count,
+//  * if 4 or more similar bumps show up the scan is ambiguous and is rejected instead of guessed.
 bool analyzeScan(String& err) {
   scanPotsFound = 0;
   if (scanN < 20) { err = "Scan too short - check the End IR sensor"; return false; }
@@ -398,43 +463,67 @@ bool analyzeScan(String& err) {
   if (n < 20) { err = "No ultrasonic echo - check TRIG/ECHO wiring and the 5V->3.3V divider"; return false; }
   std::sort(sortBuf, sortBuf + n);
 
-  // The "empty base" level is the far end of the distribution when pots are closer than the base,
-  // and the near end when pots sit lower than the base.
-  scanBaselineMm = cfg.potCloser ? sortBuf[(uint32_t)n * 90 / 100] : sortBuf[(uint32_t)n * 10 / 100];
-  scanThrMm = cfg.deltaCm * 10.0f;
-
-  for (uint16_t i = 0; i < scanN; i++) {
-    uint16_t a = scanMm[i > 0 ? i - 1 : i], b = scanMm[i], c = scanMm[i + 1 < scanN ? i + 1 : i];
-    uint16_t m = median3(a, b, c);
-    bool dev = m && (cfg.potCloser ? (m < scanBaselineMm - scanThrMm) : (m > scanBaselineMm + scanThrMm));
-    flagBuf[i] = dev ? 1 : 0;
-  }
-
-  uint8_t total = 0;
-  int i = 0;
-  while (i < (int)scanN) {
-    if (!flagBuf[i]) { i++; continue; }
-    int s = i, e = i, gap = 0, j = i + 1;
-    while (j < (int)scanN) {
-      if (flagBuf[j]) { e = j; gap = 0; }
-      else if (++gap > MERGE_GAP) break;
-      j++;
-    }
-    if (e - s + 1 >= MIN_RUN) {
-      if (total < EXPECTED_POTS) { scanPotS[total] = s; scanPotE[total] = e; }
-      total++;
-    }
-    i = e + 1;
-  }
-  scanPotsFound = total;
-  if (total != EXPECTED_POTS) {
-    err = "Found " + String(total) + " pot(s), expected " + String(EXPECTED_POTS) +
-          ". Open the scan chart and tune the distance change / pot direction.";
+  float p10 = sortBuf[(uint32_t)n * 10 / 100];
+  float base = sortBuf[n / 2];  // median = the level most of the rail has
+  float p90 = sortBuf[(uint32_t)n * 90 / 100];
+  float offsetMm = max(base - p10, p90 - base);  // how far the biggest bumps stand out
+  scanBaselineMm = base;
+  scanThrMm = 0;
+  if (offsetMm < 10.0f) {  // under 1 cm of change along the whole rail
+    err = "The distance hardly changes along the rail (" + String(offsetMm / 10.0f, 1) +
+          " cm). Either the carriage is not really moving, or the sensor does not look down at the pots.";
     return false;
   }
+
+  float thr = cfg.deltaCm * 10.0f;
+  if (thr > offsetMm * 0.5f) thr = offsetMm * 0.5f;  // the real pot height is smaller than the setting
+  if (thr < 8.0f) thr = 8.0f;
+  scanThrMm = thr;
+
+  int nLow = findRuns(true, base, thr, runLow);
+  int nHigh = findRuns(false, base, thr, runHigh);
+  bool okLow = nLow >= EXPECTED_POTS, okHigh = nHigh >= EXPECTED_POTS;
+  if (!okLow && !okHigh) {
+    err = "Found " + String(nLow) + " closer / " + String(nHigh) + " lower bump(s), expected " + String(EXPECTED_POTS) +
+          " (rail level " + String(base / 10.0f, 1) + " cm, threshold " + String(thr / 10.0f, 1) +
+          " cm). Open the scan chart: the carriage must move and the sensor must look down at the pots.";
+    scanPotsFound = max(nLow, nHigh);
+    return false;
+  }
+  int scoreLow = okLow ? runScore(runLow, nLow) : -1;
+  int scoreHigh = okHigh ? runScore(runHigh, nHigh) : -1;
+  bool closer = (scoreLow == scoreHigh) ? cfg.potCloser : (scoreLow > scoreHigh);
+  Run* r = closer ? runLow : runHigh;
+  int found = closer ? nLow : nHigh;
+  cfg.potCloser = closer;  // remember which way the pots stand out
+
+  if (found > EXPECTED_POTS) {  // r[] is longest-first: a 4th bump almost as long as the 3rd is ambiguous
+    int third = r[EXPECTED_POTS - 1].e - r[EXPECTED_POTS - 1].s;
+    int fourth = r[EXPECTED_POTS].e - r[EXPECTED_POTS].s;
+    if (fourth * 10 >= third * 7) {
+      err = "Found " + String(found) + " similar bumps but there should be " + String(EXPECTED_POTS) +
+            " pots. Remove other objects from the rail sides or use Manual setup.";
+      scanPotsFound = found;
+      return false;
+    }
+  }
+  for (int a = 0; a < EXPECTED_POTS; a++)  // sort the 3 chosen runs by position
+    for (int b = a + 1; b < EXPECTED_POTS; b++)
+      if (r[b].s < r[a].s) std::swap(r[a], r[b]);
+
+  int covered = 0;
+  for (int k = 0; k < EXPECTED_POTS; k++) covered += r[k].e - r[k].s + 1;
+  for (int k = 0; k < EXPECTED_POTS; k++) { scanPotS[k] = r[k].s; scanPotE[k] = r[k].e; }
+  scanPotsFound = EXPECTED_POTS;
+  if (covered * 10 > (int)scanN * 6) {
+    err = "The 3 pots would cover most of the rail - the base level is probably wrong. Check the sensor aim.";
+    return false;
+  }
+
   for (uint8_t k = 0; k < EXPECTED_POTS; k++)
     cfg.potPos[k] = ((long)(scanPotS[k] + scanPotE[k]) * SCAN_SAMPLE_STEPS) / 2;
-  cfg.baselineCm = scanBaselineMm / 10.0f;
+  cfg.baselineCm = base / 10.0f;
+  cfg.effDeltaCm = thr / 10.0f;
 
   // typical (median) distance to each pot lid
   for (uint8_t k = 0; k < EXPECTED_POTS; k++) {
@@ -506,7 +595,7 @@ void startCmd() {
     case CMD_JOG:
       state = ST_MOVING;
       statusMsg = "Jog";
-      rail.setMaxSpeed(500);
+      rail.setMaxSpeed(400);
       rail.setAcceleration(RAIL_ACCEL);
       rail.moveTo(rail.position() + cur.arg);
       break;
@@ -675,8 +764,7 @@ void schedulerService() {
 long turnDegrees() { return (turn.position() * 360L) / STEPS_PER_REV_HALF; }
 
 void turnService() {
-  turn.update();
-  if (turn.isRunning()) return;
+  if (turn.isRunning()) return;  // (the steps themselves are generated by the timer)
 
   if (sweeping) {
     if (sweepMoving) {  // just arrived at a stop: hold for a moment
@@ -763,6 +851,7 @@ void handleStatus() {
   kvf(j, "distance_cm", fresh ? distNow : -1.0f);
   kvf(j, "baseline_cm", cfg.baselineCm);
   kvb(j, "pump", pumpOn);
+  kvb(j, "pump_pin_high", digitalRead(PIN_PUMP));   // the level the relay input line really sits at (diagnostics)
   kvb(j, "auto", cfg.autoMode);
   kvi(j, "queue", qCount + (curActive ? 1 : 0));
   kvi(j, "active_pot", activePot);
@@ -777,6 +866,7 @@ void handleStatus() {
   kvb(j, "pot_closer", cfg.potCloser);
   kvb(j, "park", cfg.park);
   kvb(j, "verify", cfg.verifyPot);
+  kvb(j, "pump_active_low", cfg.pumpActiveLow);
   kvi(j, "rail_speed", cfg.railSpeed);
   kvi(j, "scan_speed", cfg.scanSpeed);
   trimComma(j);
@@ -1073,6 +1163,7 @@ void handleSettings() {
   if (num("pot_closer", 0, 1, v)) cfg.potCloser = v;
   if (num("park", 0, 1, v)) cfg.park = v;
   if (num("verify", 0, 1, v)) cfg.verifyPot = v;
+  if (num("pump_low", 0, 1, v)) { cfg.pumpActiveLow = v; pumpSet(pumpOn); }  // relay type: re-apply the current state
   if (server.hasArg("delta_cm")) {
     float d = server.arg("delta_cm").toFloat();
     cfg.deltaCm = d < 0.5f ? 0.5f : (d > 30.0f ? 30.0f : d);
@@ -1157,12 +1248,15 @@ void wifiService() {
 //  Arduino entry points
 // ----------------------------------------------------------------------------
 void setup() {
-  // pump first, so it can never glitch on at boot
-  pinMode(PIN_PUMP, OUTPUT);
+  // Pump first. The pin is not touched (floating = off for every relay board) until the saved relay type is known,
+  // so a wrong guess can never switch the pump on at boot.
+  loadSettings();
   pumpSet(false);
 
   Serial.begin(115200);
   delay(200);
+  Serial.printf("Relay: %s, pump OFF (GPIO %d reads %d)\n", cfg.pumpActiveLow ? "active-LOW" : "active-HIGH",
+                PIN_PUMP, digitalRead(PIN_PUMP));
   Serial.println("\nPlant Rail controller " FW_VERSION);
 
   pinMode(PIN_US_TRIG, OUTPUT);
@@ -1182,7 +1276,7 @@ void setup() {
   turn.begin();
   rail.release();
   turn.release();
-  loadSettings();
+  startStepTimer();
 
   connectWifi();
   setupServer();
@@ -1194,10 +1288,28 @@ void setup() {
   if (AUTO_HOME_ON_BOOT) qPush(CMD_HOME);
 }
 
+// The motors are stepped from a hardware timer every 250 us, independent of loop(). A 28BYJ-48 stalls
+// if its steps pause for a few milliseconds (Wi-Fi, HTTP, sensor reads), which looked like "the step
+// count goes up but the carriage stands still".
+static void stepTimerCb(void*) {
+  rail.update();
+  turn.update();
+}
+
+void startStepTimer() {
+  static esp_timer_handle_t timer = nullptr;
+  esp_timer_create_args_t args = {};
+  args.callback = &stepTimerCb;
+  args.dispatch_method = ESP_TIMER_TASK;
+  args.name = "steppers";
+  args.skip_unhandled_events = true;
+  esp_timer_create(&args, &timer);
+  esp_timer_start_periodic(timer, 250);
+}
+
 void loop() {
   irService();
   server.handleClient();
-  rail.update();
   turnService();
   pumpService();
   sequencerService();

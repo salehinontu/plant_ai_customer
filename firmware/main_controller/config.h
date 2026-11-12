@@ -43,8 +43,11 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 // Typical IR obstacle modules pull OUT low when the carriage flag is in front of them.
 #define IR_ACTIVE_LOW true
 
-// Most 1-channel relay boards are active-LOW (IN low = pump ON).
-// After flashing, the pump must be OFF while idle. If it is ON, flip this.
+// Relay type: true = active-LOW (IN low = pump ON), false = active-HIGH (IN high = pump ON).
+// Most blue relay boards are active-LOW, so that is the default. An active-LOW pump is switched OFF by releasing the
+// pin (see pumpSet), not by driving it HIGH. Safe failure: with the wrong type the pump simply never starts.
+// The website (Care > Behaviour > Relay type) changes this without re-flashing. NOTE: once saved there, the saved
+// value wins over this line; this define only applies to a fresh / erased board.
 #define PUMP_ACTIVE_LOW true
 
 // Home the carriage automatically at power-up (leave false for the first bring-up).
@@ -55,8 +58,8 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 //  MOTION
 // ---------------------------------------------------------------------------
 #define STEPS_PER_REV_HALF 4096      // 28BYJ-48 in half-step mode (turntable: steps for 360 deg)
-#define RAIL_ACCEL         600.0f    // steps / s^2
-#define HOME_SPEED         500.0f    // steps / s while seeking the Home sensor
+#define RAIL_ACCEL         400.0f    // steps / s^2 (gentle: a 28BYJ-48 loses torque quickly with speed)
+#define HOME_SPEED         400.0f    // steps / s while seeking the Home sensor
 #define HOME_SLOW_SPEED    150.0f    // steps / s for the final, precise approach (the zero is always the same edge)
 #define HOME_BACKOFF_MAX   4000L     // max steps allowed to step off a sensor again (flag too small / sensor stuck on)
 #define IR_DEBOUNCE_MS     4         // an IR reading must stay the same this long before it counts
@@ -66,7 +69,7 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 // 180 deg each way = a full 360 deg look at the plant, and the cable never twists more than half a turn.
 #define SWEEP_DEG          180
 #define SWEEP_PAUSE_MS     800       // hold at every stop (time for the camera)
-#define MAX_TRAVEL_STEPS   60000L    // give up homing / scanning after this many steps (rail length safety)
+#define MAX_TRAVEL_STEPS   40000L    // give up homing / scanning after this many steps (rail length safety)
 
 // ---------------------------------------------------------------------------
 //  ULTRASONIC POT SCAN

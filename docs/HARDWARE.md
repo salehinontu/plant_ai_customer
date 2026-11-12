@@ -95,7 +95,9 @@ Never power a pump from an ESP32 pin. Use a relay (or MOSFET) module:
 | COM / NO | in series with the pump's positive supply wire |
 
 * The pump gets its own supply (or the 5 V supply if it is a small 5 V pump under about 500 mA). Add a 470-1000 µF capacitor across that supply to avoid brown-outs.
-* Most relay boards are **active-low**. After flashing, with the pump power **disconnected**, the relay must be OFF while idle. If it is ON, flip `PUMP_ACTIVE_LOW` in `config.h`.
+* **Use COM and NO** (normally open), never NC. On NC the pump runs whenever the relay is off, i.e. always.
+* Most relay boards are **active-low**. The firmware switches an active-low board OFF by *releasing* the pin (not by driving it HIGH): an ESP32 HIGH is only 3.3 V, which on a board with a 5 V supply can leave the relay on. This is the default (`PUMP_ACTIVE_LOW true`). If the pump never starts during the Pump test, switch **Care > Behaviour > Relay type** to *Active-HIGH* and save.
+* Finding out why a pump "is always on": unplug the pump's wire from the relay and look at the relay board. **Red LED / click while idle** = the board is being told ON (wrong relay type, wrong wire on IN, or the board needs a different jumper: some have a high/low trigger jumper). **LED off but the pump still runs** = the pump is on NC or wired around the relay.
 * Use the "Pump test" button on the Care page for the first test, with the pump in a cup of water.
 * A DC pump on a MOSFET needs a flyback diode across the pump.
 

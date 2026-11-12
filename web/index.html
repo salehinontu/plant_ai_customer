@@ -290,7 +290,11 @@
         <label class="field">Pots are<select data-setting="pot_closer"><option value="1">closer than the base</option><option value="0">lower than the base</option></select></label>
         <label class="field">Return home after watering<select data-setting="park"><option value="1">Yes</option><option value="0">No</option></select></label>
         <label class="field">Check for the pot with ultrasonic before watering<select data-setting="verify"><option value="1">Yes</option><option value="0">No</option></select></label>
+        <label class="field">Relay type<select data-setting="pump_low"><option value="1">Active-LOW (most blue relay boards)</option><option value="0">Active-HIGH</option></select></label>
+        <label class="field">Carriage speed <span class="unit">steps/s</span><input type="number" min="100" max="1000" step="50" data-setting="rail_speed"></label>
+        <label class="field">Scan speed <span class="unit">steps/s</span><input type="number" min="100" max="600" step="50" data-setting="scan_speed"></label>
       </div>
+      <p class="hint">Relay type: if the pump never starts, switch this and press Save. Disconnect the pump power while you experiment and watch the relay's red LED: it must be OFF when the pump is idle. Speeds: if the carriage stalls (the step counter moves but the carriage does not), lower them.</p>
       <p class="hint">Nozzle offset: if the water lands beside the pot, move the carriage with this value (positive = towards End).</p>
     </div>
   </div>

@@ -17,13 +17,16 @@ from pydantic import BaseModel
 
 from . import ai, config
 from .db import DB
-from .devices import Camera, Device, DeviceError, MockCamera, MockDevice
+from .devices import Camera, CameraFeed, Device, DeviceError, MockCamera, MockDevice
 
 log = logging.getLogger("plantrail")
 
 db = DB()
 device: Any = MockDevice() if config.MOCK else Device(config.ESP32_URL, config.ESP32_API_KEY)
 camera: Any = MockCamera() if config.MOCK else Camera(config.CAM_URL)
+feed = CameraFeed(camera)
+if config.MOCK:
+    feed.MIN_GAP_S = 1.0  # the simulator picture never changes
 
 ACTIONS = {"home", "calibrate", "goto", "water", "check", "stop", "pump", "jog", "auto", "turntable",
            "sweep", "teach", "soilcal", "settings"}
@@ -170,7 +173,7 @@ def poll_loop() -> None:
 async def lifespan(_: FastAPI):
     threading.Thread(target=poll_loop, daemon=True, name="poller").start()
     mode = "SIMULATED hardware" if config.MOCK else f"controller {config.ESP32_URL}"
-    log.warning("Plant Rail ready - %s | AI: %s", mode, f"{config.CLAUDE_MODEL}" if ai.has_key() else "demo mode (no API key)")
+    log.warning("Plant Rail ready - %s | AI: %s", mode, f"{ai.provider()} / {ai.model_name()}" if ai.has_key() else "demo mode (no API key)")
     yield
 
 
@@ -201,7 +204,7 @@ def api_status():
         "age_s": round(time.time() - STATE["ts"], 1) if STATE["ts"] else None,
         "device": STATE["device"],
         "cam": {"online": STATE["cam_online"], "stream_url": None if config.MOCK else config.CAM_STREAM_URL},
-        "ai": {"enabled": ai.has_key(), "model": config.CLAUDE_MODEL, "demo": not ai.has_key()},
+        "ai": {"enabled": ai.has_key(), "provider": ai.provider(), "model": ai.model_name(), "demo": not ai.has_key()},
         "mock": config.MOCK,
         "auto_scan_hours": config.AUTO_SCAN_HOURS,
         "server_time": int(time.time()),
@@ -226,14 +229,21 @@ def api_scan():
 
 
 @app.get("/api/camera/snapshot")
-def api_snapshot(hq: int = 0, flash: int = 0):
+def api_snapshot(hq: int = 0, flash: int = 0, after: int = 0):
+    """Preview frame. Normally the cached newest frame (fast); `after=N` waits for a frame newer than id N.
+    hq / flash take a fresh full-quality picture straight from the camera."""
     try:
-        img, mime = camera.snapshot(hq=bool(hq), flash=bool(flash))
+        if hq or flash:
+            img, mime = camera.snapshot(hq=bool(hq), flash=bool(flash))
+            frame_id = 0
+        else:
+            img, mime, frame_id = feed.get(after)
     except DeviceError:
         STATE["cam_online"] = False
         raise
     STATE["cam_online"] = True
-    return Response(img, media_type=mime.split(";")[0], headers={"Cache-Control": "no-store"})
+    return Response(img, media_type=mime.split(";")[0],
+                    headers={"Cache-Control": "no-store", "X-Frame-Id": str(frame_id)})
 
 
 def pick_lang(lang: Optional[str]) -> str:

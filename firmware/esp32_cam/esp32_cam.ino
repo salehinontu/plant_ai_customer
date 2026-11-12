@@ -4,8 +4,8 @@
 //  A separate board from the main controller. No wires between them - both just
 //  join the same Wi-Fi network.
 //
-//    http://plantcam.local/capture          one JPEG snapshot (SVGA)
-//    http://plantcam.local/capture?hq=1     one high-resolution JPEG (UXGA) for AI diagnosis
+//    http://plantcam.local/capture          one JPEG snapshot (SVGA; VGA on RGB sensors)
+//    http://plantcam.local/capture?hq=1     one high-resolution JPEG (UXGA; XGA on RGB sensors) for AI diagnosis
 //    http://plantcam.local/capture?flash=1  switch the on-board LED on while shooting
 //    http://plantcam.local:81/stream        MJPEG live stream
 //    http://plantcam.local/status           small JSON health report
@@ -44,14 +44,20 @@
 #define HREF_GPIO_NUM 23
 #define PCLK_GPIO_NUM 22
 
+// JPEG sensors (OV2640): live preview and the photo for the AI.
 static const framesize_t NORMAL_SIZE = FRAMESIZE_SVGA;  // 800x600
 static const framesize_t HQ_SIZE = FRAMESIZE_UXGA;      // 1600x1200
-// Sensors without JPEG (e.g. GC2145, PID 0x2145) deliver RGB565 frames that are converted here.
-// One size for everything, because the frame buffer is allocated once: XGA = 1024x768 (1.5 MB of PSRAM).
-// If the camera then fails with "no memory", use FRAMESIZE_SVGA (800x600) or FRAMESIZE_VGA (640x480).
-static const framesize_t RGB_SIZE = FRAMESIZE_XGA;
+// Sensors without JPEG (e.g. GC2145, PID 0x2145) deliver RGB565 frames that are converted to JPEG here, which is
+// slow for big pictures. So the live preview / stream is small (fast) and only the AI photo is big.
+// The frame buffer is allocated once for the big size (XGA = 1024x768, 1.5 MB of PSRAM) and smaller sizes reuse it.
+// If the camera fails with "no memory", use FRAMESIZE_SVGA (800x600) for RGB_HQ_SIZE.
+static const framesize_t RGB_SIZE = FRAMESIZE_XGA;         // buffer size
+static const framesize_t RGB_HQ_SIZE = FRAMESIZE_XGA;      // photo for the AI
+static const framesize_t RGB_PREVIEW_SIZE = FRAMESIZE_VGA; // live preview + stream (640x480)
 
 static bool jpegSensor = true;  // false: frames are converted to JPEG in software
+static framesize_t previewSize = NORMAL_SIZE;
+static framesize_t photoSize = HQ_SIZE;
 static httpd_handle_t httpMain = NULL;
 static httpd_handle_t httpStream = NULL;
 
@@ -74,7 +80,7 @@ static void setSize(framesize_t s) {
 
 // Gives a JPEG for a frame: the frame itself for JPEG sensors, a converted copy otherwise.
 // When *mustFree is true the caller frees *out with free().
-static bool frameToJpeg(camera_fb_t* fb, uint8_t** out, size_t* len, bool* mustFree) {
+static bool frameToJpeg(camera_fb_t* fb, uint8_t** out, size_t* len, bool* mustFree, uint8_t quality = 70) {
   if (fb->format == PIXFORMAT_JPEG) {
     *out = fb->buf;
     *len = fb->len;
@@ -82,14 +88,14 @@ static bool frameToJpeg(camera_fb_t* fb, uint8_t** out, size_t* len, bool* mustF
     return true;
   }
   *mustFree = true;
-  return frame2jpg(fb, 85, out, len);
+  return frame2jpg(fb, quality, out, len);
 }
 
 static esp_err_t captureHandler(httpd_req_t* req) {
-  bool hq = queryHas(req, "hq") && jpegSensor;  // sensors without JPEG are limited to 640x480
+  bool hq = queryHas(req, "hq");
   bool flash = queryHas(req, "flash");
 
-  if (hq) setSize(HQ_SIZE);
+  if (hq) setSize(photoSize);
   if (flash) digitalWrite(FLASH_LED_PIN, HIGH);
   if (hq || flash) {  // let exposure settle, throw away the stale frame
     delay(250);
@@ -99,12 +105,12 @@ static esp_err_t captureHandler(httpd_req_t* req) {
 
   camera_fb_t* fb = esp_camera_fb_get();
   if (flash) digitalWrite(FLASH_LED_PIN, LOW);
-  if (hq) setSize(NORMAL_SIZE);
+  if (hq) setSize(previewSize);
 
   uint8_t* jpg = NULL;
   size_t jlen = 0;
   bool mustFree = false;
-  if (!fb || !frameToJpeg(fb, &jpg, &jlen, &mustFree)) {
+  if (!fb || !frameToJpeg(fb, &jpg, &jlen, &mustFree, hq ? 85 : 70)) {
     if (fb) esp_camera_fb_return(fb);
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Camera capture failed");
     return ESP_FAIL;
@@ -218,6 +224,8 @@ static bool startCamera() {
     config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     jpegSensor = false;
+    previewSize = RGB_PREVIEW_SIZE;
+    photoSize = RGB_HQ_SIZE;
     err = esp_camera_init(&config);
   }
   if (err != ESP_OK) {
@@ -227,6 +235,7 @@ static bool startCamera() {
   sensor_t* s = esp_camera_sensor_get();
   if (s) {
     Serial.printf("Camera sensor PID 0x%x, %s\n", s->id.PID, jpegSensor ? "JPEG output" : "RGB565 converted to JPEG");
+    if (!jpegSensor) s->set_framesize(s, previewSize);  // RGB sensors: start small = fast preview
     s->set_vflip(s, 0);    // set to 1 if the picture is upside down
     s->set_hmirror(s, 0);
   }
