@@ -43,12 +43,14 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 // Typical IR obstacle modules pull OUT low when the carriage flag is in front of them.
 #define IR_ACTIVE_LOW true
 
-// Relay type: true = active-LOW (IN low = pump ON), false = active-HIGH (IN high = pump ON).
-// Most blue relay boards are active-LOW, so that is the default. An active-LOW pump is switched OFF by releasing the
-// pin (see pumpSet), not by driving it HIGH. Safe failure: with the wrong type the pump simply never starts.
-// The website (Care > Behaviour > Relay type) changes this without re-flashing. NOTE: once saved there, the saved
-// value wins over this line; this define only applies to a fresh / erased board.
-#define PUMP_ACTIVE_LOW true
+// Relay mode (the website, Care > Behaviour > Relay type, changes it without re-flashing; once saved there the saved
+// value wins over this line, which only applies to a fresh / erased board):
+//   0 = active-HIGH board : ON = pin HIGH, OFF = pin LOW
+//   1 = active-LOW board  : ON = pin LOW,  OFF = pin driven HIGH            <- default, the usual blue relay board
+//   2 = active-LOW board  : ON = pin LOW,  OFF = pin RELEASED (high impedance). Only for a board with a real pull-up
+//                           on IN, or with your own 10 k resistor between IN and VCC. Without a pull-up the line stays
+//                           LOW after the pump stopped and the relay never drops out.
+#define PUMP_MODE 1
 
 // Home the carriage automatically at power-up (leave false for the first bring-up).
 // After an automatic calibration the carriage homes at power-up anyway (the sensors are proven), and every

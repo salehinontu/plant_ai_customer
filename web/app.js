@@ -550,7 +550,7 @@
     const c = d.settings;
     set('check_min', c.check_min); set('soak_min', c.soak_min); set('nozzle_offset', c.nozzle_offset);
     set('delta_cm', c.delta_cm); set('pot_closer', c.pot_closer ? '1' : '0'); set('park', c.park ? '1' : '0'); set('verify', c.verify ? '1' : '0');
-    set('pump_low', c.pump_active_low ? '1' : '0'); set('rail_speed', c.rail_speed); set('scan_speed', c.scan_speed);
+    set('pump_low', c.pump_mode !== undefined ? c.pump_mode : (c.pump_active_low ? 1 : 0)); set('rail_speed', c.rail_speed); set('scan_speed', c.scan_speed);
     d.pots.forEach((p) => { set('e' + p.id, p.enabled); set('t' + p.id, p.threshold); set('s' + p.id, p.water_secs); });
   }
 

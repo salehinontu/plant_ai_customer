@@ -48,7 +48,7 @@ struct Settings {
   bool verifyPot = true;        // check with the ultrasonic sensor that a pot is below the nozzle before pumping
   float potCm[3] = {0, 0, 0};   // distance from the sensor to each pot lid, measured while scanning
   float effDeltaCm = 3.0f;      // the "pot below me" threshold actually used (adapted to the scan)
-  bool pumpActiveLow = PUMP_ACTIVE_LOW;  // relay type, can be changed from the website
+  uint8_t pumpMode = PUMP_MODE;  // relay mode 0 / 1 / 2 (see config.h), can be changed from the website
   bool autoCal = false;         // the pots were found by the automatic scan (IR + ultrasonic) -> position guard is on
   int32_t potLo[3] = {0, 0, 0}; // where each pot lid starts / ends along the rail (steps), from the scan
   int32_t potHi[3] = {0, 0, 0};
@@ -229,25 +229,21 @@ void kvs(String& j, const char* k, const String& v) { j += '"'; j += k; j += "\"
 // ----------------------------------------------------------------------------
 //  Pump
 // ----------------------------------------------------------------------------
-// Relay drive. The pump must be OFF whenever nothing asks for it, whatever the relay board is:
-//   active-HIGH board : ON = pin HIGH, OFF = pin LOW
-//   active-LOW board  : ON = pin LOW,  OFF = pin RELEASED (input, high impedance) - NOT driven HIGH.
-// Why released: most relay boards are powered from 5 V and have their own pull-up on IN. An ESP32 "HIGH" is only
-// 3.3 V, 1.7 V below that supply, which can keep the opto-coupler LED partly lit so the relay never switches off.
-// A released pin lets the board pull IN up to its own 5 V and the relay really drops out.
+// Relay drive, see PUMP_MODE in config.h. The pin is always driven, except in mode 2 where OFF means "released"
+// (that only works when the board, or your own resistor, pulls IN up: a released pin with no pull-up floats and
+// can stay LOW, which keeps the relay - and the pump - on).
 void pumpSet(bool on) {
   pumpOn = on;
-  if (cfg.pumpActiveLow) {
-    if (on) {
-      digitalWrite(PIN_PUMP, LOW);   // set the level first, then take the pin over: no glitch
-      pinMode(PIN_PUMP, OUTPUT);
-    } else {
-      pinMode(PIN_PUMP, INPUT);
-    }
-  } else {
-    digitalWrite(PIN_PUMP, on ? HIGH : LOW);
-    pinMode(PIN_PUMP, OUTPUT);
+  bool level;
+  if (cfg.pumpMode == 0) level = on;                  // active-HIGH board
+  else level = !on;                                   // active-LOW board: LOW = ON, HIGH = OFF
+  if (cfg.pumpMode == 2 && !on) {
+    pinMode(PIN_PUMP, INPUT);                         // released: the pull-up on IN holds the relay off
+    return;
   }
+  digitalWrite(PIN_PUMP, level);                      // set the level first, then take the pin over: no glitch
+  pinMode(PIN_PUMP, OUTPUT);
+  digitalWrite(PIN_PUMP, level);
 }
 
 void pumpFor(uint32_t ms) {
@@ -1006,7 +1002,8 @@ void handleStatus() {
   kvb(j, "pot_closer", cfg.potCloser);
   kvb(j, "park", cfg.park);
   kvb(j, "verify", cfg.verifyPot);
-  kvb(j, "pump_active_low", cfg.pumpActiveLow);
+  kvb(j, "pump_active_low", cfg.pumpMode != 0);
+  kvi(j, "pump_mode", cfg.pumpMode);
   kvi(j, "rail_speed", cfg.railSpeed);
   kvi(j, "scan_speed", cfg.scanSpeed);
   trimComma(j);
@@ -1304,7 +1301,7 @@ void handleSettings() {
   if (num("pot_closer", 0, 1, v)) cfg.potCloser = v;
   if (num("park", 0, 1, v)) cfg.park = v;
   if (num("verify", 0, 1, v)) cfg.verifyPot = v;
-  if (num("pump_low", 0, 1, v)) { cfg.pumpActiveLow = v; pumpSet(pumpOn); }  // relay type: re-apply the current state
+  if (num("pump_low", 0, 2, v)) { cfg.pumpMode = v; pumpSet(pumpOn); }  // relay mode: re-apply the current state
   if (server.hasArg("delta_cm")) {
     float d = server.arg("delta_cm").toFloat();
     cfg.deltaCm = d < 0.5f ? 0.5f : (d > 30.0f ? 30.0f : d);
@@ -1396,7 +1393,8 @@ void setup() {
 
   Serial.begin(115200);
   delay(200);
-  Serial.printf("Relay: %s, pump OFF (GPIO %d reads %d)\n", cfg.pumpActiveLow ? "active-LOW" : "active-HIGH",
+  Serial.printf("Relay mode %d (%s), pump OFF (GPIO %d reads %d)\n", cfg.pumpMode,
+                cfg.pumpMode == 0 ? "active-HIGH" : (cfg.pumpMode == 1 ? "active-LOW, OFF = driven HIGH" : "active-LOW, OFF = released"),
                 PIN_PUMP, digitalRead(PIN_PUMP));
   Serial.println("\nPlant Rail controller " FW_VERSION);
 
