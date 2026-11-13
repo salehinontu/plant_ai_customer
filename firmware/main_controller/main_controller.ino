@@ -123,6 +123,13 @@ uint8_t guardUsBad = 0;       // consecutive ultrasonic readings that disagree w
 long homeZoneSteps = 0;       // width of the IR 1 detection zone, measured while homing
 void guardPing(float d);
 
+// IR edge capture. The 250 us step timer samples both IR sensors too and latches a sensor that was active for
+// IR_LATCH_TICKS in a row, so a flag only a few steps wide cannot slip past between two loop() passes.
+volatile uint8_t irHomeTicks = 0, irEndTicks = 0;
+volatile bool irHomeLatch = false, irEndLatch = false;
+bool irSeenInPhase = false;   // the IR 1 sensor was active at some point of the current homing phase
+long homeLimitSteps = MAX_TRAVEL_STEPS;  // how far the current Home may search before it gives up
+
 // soil
 float soilEma[3] = {0, 0, 0};
 bool soilInit = false;
@@ -671,6 +678,8 @@ bool analyzeScan(String& err) {
 void homePhase(uint8_t p) {
   phase = p;
   phasePos = rail.position();
+  irSeenInPhase = irHome();
+  irHomeLatch = false;
   rail.stopNow();  // never reverse at speed
   if (p == 2) rail.runAt(-HOME_SPEED);
   else if (p == 4) rail.runAt(-HOME_SLOW_SPEED);
@@ -686,6 +695,11 @@ void startCmd() {
       statusMsg = "Homing";
       endArmed = !irEnd();
       cmdStartPos = rail.position();
+      homeLimitSteps = MAX_TRAVEL_STEPS;
+      if (homed) {  // the counter was right a moment ago, so Home cannot be much further away than the counted distance
+        long p = rail.position();
+        homeLimitSteps = (p > 0 ? p : 0) + 3000;
+      }
       rail.setAcceleration(RAIL_ACCEL);
       homePhase(irHome() ? 1 : 2);  // on the sensor: step off it first; otherwise approach it
       break;
@@ -697,6 +711,7 @@ void startCmd() {
       scanN = 0;
       scanValid = 0;
       nextSamplePos = 0;
+      irEndLatch = false;
       rail.setAcceleration(RAIL_ACCEL);
       rail.runAt((float)cfg.scanSpeed);
       break;
@@ -736,17 +751,22 @@ void stepCmd() {
       if (phase == 2) {  // fast approach towards Home
         if (!irEnd()) endArmed = true;
         if (endArmed && irEnd()) { fail("Hit the End sensor while homing - flip INVERT_RAIL_DIR in config.h"); return; }
-        if (irHome()) { homePhase(3); return; }  // touched the sensor: step off, then come back slowly
-        if (labs(rail.position() - cmdStartPos) > MAX_TRAVEL_STEPS) { fail("Home sensor not found - check IR 1 wiring and the white flag"); return; }
-      } else if (phase == 1 || phase == 3) {  // step off the sensor
-        if (!irHome()) {
+        if (irHome() || irHomeLatch) { homePhase(3); return; }  // touched the sensor (the timer latch never misses it): step off, then come back slowly
+        if (labs(rail.position() - cmdStartPos) > homeLimitSteps) { fail("Home sensor not found - check IR 1 wiring, the white flag and its height"); return; }
+      } else if (phase == 1 || phase == 3) {  // step off the sensor (towards End); if we already passed it, go on until it is crossed
+        if (irHomeLatch) irSeenInPhase = true;
+        if (irHomeLatch && irHomeTicks == 0) {  // it was active during this phase and the flag is off the sensor now
           if (phase == 3 && moved > homeZoneSteps) homeZoneSteps = moved;  // near edge -> far edge = zone width
           homePhase(4);
           return;
         }
-        if (moved > HOME_BACKOFF_MAX) { fail("IR 1 stays on when moving away from it - check the flag size and the sensor sensitivity"); return; }
+        if (moved > HOME_BACKOFF_MAX) {
+          fail(irSeenInPhase ? "IR 1 stays on when moving away from it - check the flag size and the sensor sensitivity"
+                             : "Passed the Home sensor without seeing it - check the flag height and the IR 1 sensitivity");
+          return;
+        }
       } else {  // phase 4: slow final approach, the zero is the same edge every time
-        if (irHome()) {
+        if (irHome() || irHomeLatch) {
           rail.stopNow();
           rail.setPosition(0);
           homed = true;
@@ -771,7 +791,7 @@ void stepCmd() {
           return;
         }
       }
-      if (irEnd()) {
+      if (irEnd() || irEndLatch) {
         rail.stopNow();
         cfg.railSteps = rail.position();
         String err;
@@ -988,6 +1008,7 @@ void handleStatus() {
   kvb(j, "calibrated", cfg.calibrated);
   kvb(j, "auto_cal", cfg.autoCal);
   kvi(j, "guard_strikes", guardStrikes);
+  kvi(j, "home_zone", homeZoneSteps);
   kvi(j, "pos", rail.position());
   kvi(j, "rail_steps", cfg.railSteps);
   kvb(j, "ir_home", irHome());
@@ -1442,6 +1463,12 @@ void setup() {
 static void stepTimerCb(void*) {
   rail.update();
   turn.update();
+  // IR edge capture (see irHomeLatch): a sensor active for IR_LATCH_TICKS timer ticks in a row is remembered until
+  // the sequencer has looked at it, even when loop() was busy at that moment.
+  if (irRaw(PIN_IR_HOME)) { if (irHomeTicks < 255) irHomeTicks++; if (irHomeTicks >= IR_LATCH_TICKS) irHomeLatch = true; }
+  else irHomeTicks = 0;
+  if (irRaw(PIN_IR_END)) { if (irEndTicks < 255) irEndTicks++; if (irEndTicks >= IR_LATCH_TICKS) irEndLatch = true; }
+  else irEndTicks = 0;
 }
 
 void startStepTimer() {

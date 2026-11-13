@@ -171,7 +171,7 @@ class MockDevice:
         self.moist = [58.0, 23.0, 41.0]
         self.auto = True
         self.cfg = dict(check_min=2, soak_min=5, nozzle_offset=0, delta_cm=3.0, pot_closer=True,
-                        park=True, verify=True, rail_speed=600, scan_speed=300, pump_active_low=False, pump_mode=0)
+                        park=True, verify=True, rail_speed=600, scan_speed=300, pump_active_low=True, pump_mode=1)
         self.pots = [dict(threshold=35, water_secs=5, enabled=True, dry=2900, wet=1300) for _ in range(3)]
         self.state, self.message, self.error = "idle", "Ready", ""
         self.queue: list[dict[str, Any]] = []

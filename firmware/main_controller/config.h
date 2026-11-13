@@ -46,12 +46,13 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 
 // Relay mode (the website, Care > Behaviour > Relay type, changes it without re-flashing; once saved there the saved
 // value wins over this line, which only applies to a fresh / erased board):
-//   0 = active-HIGH board : ON = pin HIGH, OFF = pin LOW   <- default: the pin is LOW all the time and goes HIGH only
-//                                                              while the pump runs (this is the author's relay board)
-//   1 = active-LOW board  : ON = pin LOW,  OFF = pin driven HIGH
+//   0 = active-HIGH board : ON = pin HIGH, OFF = pin LOW
+//   1 = active-LOW board  : ON = pin LOW,  OFF = pin driven HIGH   <- default (the author's blue relay board)
 //   2 = active-LOW board  : ON = pin LOW,  OFF = pin RELEASED (high impedance). Only for a board with a real pull-up
 //                           on IN, or with your own 10 k resistor between IN and VCC.
-#define PUMP_MODE 0
+// A 5 V relay board powered from 5 V often cannot be switched OFF by the ESP32's 3.3 V HIGH (the relay stays on).
+// Fix without parts: power the relay board's VCC from the ESP32 3V3 pin instead of 5V (mode 1). That is what works here.
+#define PUMP_MODE 1
 
 // Home the carriage automatically at power-up (leave false for the first bring-up).
 // After an automatic calibration the carriage homes at power-up anyway (the sensors are proven), and every
@@ -63,7 +64,9 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 // ---------------------------------------------------------------------------
 #define STEPS_PER_REV_HALF 4096      // 28BYJ-48 in half-step mode (turntable: steps for 360 deg)
 #define RAIL_ACCEL         400.0f    // steps / s^2 (gentle: a 28BYJ-48 loses torque quickly with speed)
-#define HOME_SPEED         400.0f    // steps / s while seeking the Home sensor
+#define HOME_SPEED         300.0f    // steps / s while seeking the Home sensor
+#define IR_LATCH_TICKS     4         // the 250 us step timer must see an IR sensor active this many ticks in a row (= 1 ms)
+                                     // to latch it, so a flag only a few steps wide cannot slip past between two loop() passes
 #define HOME_SLOW_SPEED    150.0f    // steps / s for the final, precise approach (the zero is always the same edge)
 #define HOME_BACKOFF_MAX   4000L     // max steps allowed to step off a sensor again (flag too small / sensor stuck on)
 #define IR_DEBOUNCE_MS     4         // an IR reading must stay the same this long before it counts

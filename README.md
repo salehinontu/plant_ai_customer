@@ -77,7 +77,7 @@ Open <http://localhost:8000> (from a phone: `http://<PC-IP>:8000`).
 ### e) Bring-up checklist (first time, in this order)
 1. **Care → Direction test.** Press `200 ▶`: the carriage must move towards the End sensor. If not, flip `INVERT_RAIL_DIR` in `config.h` (it is `true` by default in this repo because the author's carriage ran backwards with `false`).
 2. **IR sensors.** Move the flag by hand: the *IR sensors* tile on Home must switch to "At Home" / "At End".
-3. **Pump test**, with the pump in a cup. It must be off when idle. Wire the pump through **COM and NO**. Relay type (3 modes) is on the Care page (Behaviour); the default is *active-HIGH* (pin LOW = pump off, HIGH = pump on); if your relay LED is on while idle the type is wrong, switch it and Save. If the pump never starts, switch the type; if the relay LED is on while idle, see *Water pump* in [docs/HARDWARE.md](docs/HARDWARE.md).
+3. **Pump test**, with the pump in a cup. It must be off when idle. Wire the pump through **COM and NO**. Relay type (3 modes) is on the Care page (Behaviour); the default is *active-LOW* (pin LOW = pump on). If the relay stays on while idle: switch the type, and/or power the relay board's VCC from the ESP32 3V3 pin instead of 5V (see *Water pump* in [docs/HARDWARE.md](docs/HARDWARE.md)). If the pump never starts, switch the type; if the relay LED is on while idle, see *Water pump* in [docs/HARDWARE.md](docs/HARDWARE.md).
 4. **Calibrate rail.** The carriage homes, travels to the End sensor while the ultrasonic sensor samples, and detects the three pots. The chart shows the scan; if the pot count is not 3, tune **Pot detection** / **Pots are closer / lower than the base** and run it again. Positions are saved in flash.
    **No working ultrasonic sensor or End sensor yet?** Use **Care → Manual setup** instead: jog the carriage to Home and press *Set Home here*, jog to each pot and press *Save pot N*, then *Finish*. No scan is needed; the "check for the pot with ultrasonic" option is then off until you switch it on.
 5. **Soil sensors.** For each pot hold the sensor in air → **Set dry**, in water → **Set wet**.
@@ -155,6 +155,7 @@ All on the ESP32 (port 80). `POST` calls need the header `X-Api-Key`.
 | "Found N pots, expected 3" | open the scan chart; tune Pot detection and polarity |
 | Ultrasonic always shows `-` / "No ultrasonic echo" | open `http://<ip>/api/ultrasonic`: `echo_idle` must be 0 and `hits` above 0 with an object 10-20 cm in front (`pulses_us` about 58 per cm); `echo_idle` 1 = ECHO wire / divider wrong, all zero = no power, TRIG not on GPIO25 or ECHO not on GPIO35 |
 | "No pot detected under the nozzle" | adjust Nozzle offset; check the ultrasonic wiring and the divider |
+| Homing runs on and ends with "Home sensor not found" | the IR 1 flag is only a few steps wide and was missed while moving fast. Since firmware 1.1 the step timer latches the IR sensors every 250 µs, homing speed is 300 steps/s and the search stops 3000 steps beyond the counted distance. Still failing: widen / raise the white flag and check the IR 1 sensitivity trimpot |
 | Board will not boot / flash | unplug the lower motor IN2 wire (GPIO 12) while flashing |
 | Random resets | stronger 5 V supply, common ground, capacitor across the pump supply |
 | Camera image upside down | `set_vflip` in `esp32_cam.ino` |
