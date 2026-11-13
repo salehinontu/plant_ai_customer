@@ -101,13 +101,16 @@ Never power a pump from an ESP32 pin. Use a relay (or MOSFET) module:
 * Use the "Pump test" button on the Care page for the first test, with the pump in a cup of water.
 * A DC pump on a MOSFET needs a flyback diode across the pump.
 
+* **The controller restarts (website says "Controller offline") when the pump starts:** one USB port / cable cannot deliver the pump's start-up current, the 5 V sags and the ESP32 resets ("Brownout detector was triggered" in the Serial Monitor). Give the pump its own charger (only COM, NO and the pump are on it), or use a 5 V 2 A wall charger with a short thick cable, a 1000 µF capacitor across the ESP32 5 V / GND, and a 1N4007 diode across the pump (stripe towards +).
+
 ### Power overview
 
 | What | From |
 |---|---|
 | Both ULN2003 boards (VCC +) | the separate 5 V / 2 A supply |
-| ULN2003 GND, pump supply GND | that supply's GND |
-| **That GND ↔ ESP32 GND** | **must be joined (common ground)** |
+| ULN2003 GND | that supply's GND |
+| **That GND ↔ ESP32 GND** | **must be joined (common ground)**: the ESP32 signals to the ULN2003 boards need it |
+| Water pump | **its own supply** (phone charger / battery), wired only through the relay contacts COM + NO. A **relay needs no common GND** with the ESP32 (its contacts are isolated), and leaving it out keeps the pump's electrical noise away from the ESP32. A MOSFET/transistor switch instead of a relay *does* need a common GND. |
 | ESP32 | USB or its own 5 V |
 | Soil sensors | ESP32 3.3 V |
 | IR modules | ESP32 3.3 V |
