@@ -27,7 +27,7 @@
 // ----------------------------------------------------------------------------
 struct Settings {
   uint32_t magic = 0x504C4E54;  // "PLNT"
-  bool autoMode = true;
+  bool autoMode = false;        // automatic watering is OFF until you switch it on (after the soil sensors are calibrated)
   bool park = true;             // return Home after a job
   bool potCloser = true;        // pots are CLOSER to the sensor than the base plate
   bool calibrated = false;
@@ -41,7 +41,7 @@ struct Settings {
   int32_t railSteps = 0;
   int32_t potPos[3] = {0, 0, 0};
   uint8_t dryPct[3] = {35, 35, 35};      // water when moisture <= this
-  uint8_t waterSecs[3] = {5, 5, 5};
+  uint8_t waterSecs[3] = {2, 2, 2};      // seconds of pump per watering
   bool potEnabled[3] = {true, true, true};
   int16_t soilDry[3] = {2900, 2900, 2900};  // ADC value in air
   int16_t soilWet[3] = {1300, 1300, 1300};  // ADC value in water
@@ -254,6 +254,12 @@ void pumpFor(uint32_t ms) {
 
 void pumpService() {
   if (pumpOn && (int32_t)(millis() - pumpOffAt) >= 0) pumpSet(false);
+  // While the pump is off keep the relay pin at its OFF level (cheap, and repairs any disturbance of the pin).
+  static uint32_t lastKeep = 0;
+  if (!pumpOn && millis() - lastKeep >= 500) {
+    lastKeep = millis();
+    pumpSet(false);
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -884,7 +890,10 @@ int autoCheck() {
 }
 
 void schedulerService() {
-  if (!cfg.autoMode || !cfg.calibrated) return;
+  if (!cfg.autoMode || !cfg.calibrated) {
+    nextCheckMs = millis() + FIRST_CHECK_DELAY_MS;  // no instant check the moment calibration finishes / auto is switched on
+    return;
+  }
   if ((int32_t)(millis() - nextCheckMs) < 0) return;
   nextCheckMs = millis() + (uint32_t)cfg.checkMin * 60000UL;
   if (state == ST_ERROR) return;

@@ -4,7 +4,7 @@
 //  Everything you may need to change lives in this file.
 // ============================================================================
 
-#define FW_VERSION "1.0.0"
+#define FW_VERSION "1.1.0"
 
 // ---------------------------------------------------------------------------
 //  PIN MAP
@@ -30,6 +30,7 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 #define PIN_IR_HOME 4    // IR sensor 1 at the Home end of the rail
 #define PIN_IR_END  23   // IR sensor 2 at the far end of the rail
 #define PIN_PUMP    26   // relay / MOSFET module input that switches the water pump
+                         // (to rule out a bad pin: move the IN wire to GPIO 16 or 17 and change this number)
 
 // ---------------------------------------------------------------------------
 //  HARDWARE BEHAVIOUR
@@ -45,12 +46,12 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 
 // Relay mode (the website, Care > Behaviour > Relay type, changes it without re-flashing; once saved there the saved
 // value wins over this line, which only applies to a fresh / erased board):
-//   0 = active-HIGH board : ON = pin HIGH, OFF = pin LOW
-//   1 = active-LOW board  : ON = pin LOW,  OFF = pin driven HIGH            <- default, the usual blue relay board
+//   0 = active-HIGH board : ON = pin HIGH, OFF = pin LOW   <- default: the pin is LOW all the time and goes HIGH only
+//                                                              while the pump runs (this is the author's relay board)
+//   1 = active-LOW board  : ON = pin LOW,  OFF = pin driven HIGH
 //   2 = active-LOW board  : ON = pin LOW,  OFF = pin RELEASED (high impedance). Only for a board with a real pull-up
-//                           on IN, or with your own 10 k resistor between IN and VCC. Without a pull-up the line stays
-//                           LOW after the pump stopped and the relay never drops out.
-#define PUMP_MODE 1
+//                           on IN, or with your own 10 k resistor between IN and VCC.
+#define PUMP_MODE 0
 
 // Home the carriage automatically at power-up (leave false for the first bring-up).
 // After an automatic calibration the carriage homes at power-up anyway (the sensors are proven), and every
@@ -100,7 +101,7 @@ const uint8_t SOIL_PINS[3] = {32, 33, 34};
 // ---------------------------------------------------------------------------
 //  WATERING SAFETY
 // ---------------------------------------------------------------------------
-#define PUMP_MAX_S            30     // hard cap for one pump run
+#define PUMP_MAX_S            10     // hard cap for one pump run (a watering is 2 s by default)
 #define MAX_WATER_PER_DAY     6      // per pot, protects against a dead soil sensor flooding a pot
 #define FIRST_CHECK_DELAY_MS  45000UL
 
